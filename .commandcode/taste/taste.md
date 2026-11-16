@@ -1,0 +1,4 @@
+- Prefers the assistant to thoroughly analyze and understand the entire project before receiving specific tasks. Wants comprehensive context-gathering first, then will provide instructions. Confidence: 0.8
+- Do not use hardcoded or dummy data — always fetch and display real data from the backend. Confidence: 0.9
+- Wants root-cause identification and fixes, not band-aid patches; explicitly asks to find and fix the underlying issue. Confidence: 0.8
+- When resuming work from a previous session, expects the assistant to pick up at the last completed step without repeating prior work, and to ask before making changes if important context is missing. Confidence: 0.8

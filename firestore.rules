@@ -1,0 +1,96 @@
+rules_version = '2';
+
+// LifeCare Ambulance Service — Firestore security rules.
+// Users own their data; admin-only collections require the `admin` custom
+// claim (set via the `setUserRole` callable function).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    // User profiles (also stores saved addresses / safety info).
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // Ambulance bookings.
+    // The booking owner and the assigned driver can read; only the owner can
+    // create; status updates happen via Cloud Functions (admin SDK bypasses
+    // rules) so client writes stay admin-only.
+    match /bookings/{id} {
+      allow read: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.assigned_driver_uid == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Pickup verification PINs. Written ONLY by Cloud Functions (admin SDK,
+    // bypasses rules). The booking owner and admins may read the PIN to view
+    // and share it with the driver; drivers may NEVER read it directly — they
+    // verify via the `verifyBookingPin` callable, which checks the hash
+    // server-side. This keeps the PIN out of the driver's reach.
+    match /booking_pins/{id} {
+      allow read: if isSignedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    // Fleet, drivers and hospitals are public to read, admin-only to write.
+    match /ambulances/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /drivers/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /hospitals/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Emergency alerts: user can create + read their own; only Cloud
+    // Functions (admin SDK, bypasses rules) may update processing status.
+    match /alerts/{id} {
+      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
+      allow read: if isSignedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Per-user notifications (written by Cloud Functions / the client).
+    match /notifications/{id} {
+      allow read: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Registered emergency contacts (used by alert fan-out).
+    match /emergency_contacts/{id} {
+      allow read: if isSignedIn() && resource.data.owner_uid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.owner_uid == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.owner_uid == request.auth.uid;
+    }
+
+    // Razorpay payment records: created + updated ONLY by Cloud Functions
+    // (admin SDK bypasses rules); users can read their own payment records.
+    match /payments/{id} {
+      allow read: if isSignedIn() && (resource.data.user_id == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+  }
+}
