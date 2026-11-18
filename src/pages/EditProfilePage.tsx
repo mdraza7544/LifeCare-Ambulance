@@ -37,7 +37,8 @@ export default function EditProfilePage() {
           </div>
           <div>
             <label className="text-sm font-semibold text-gray-700 mb-1.5 block flex items-center gap-1.5"><Mail className="w-4 h-4 text-brand-500" /> Email</label>
-            <input type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="input-field" />
+            <input type="email" disabled value={form.email} className="input-field bg-gray-50 text-gray-500 cursor-not-allowed" />
+            <p className="text-[11px] text-gray-400 mt-1">To change your email address, use "Change Email" on your Profile page.</p>
           </div>
           <div>
             <label className="text-sm font-semibold text-gray-700 mb-1.5 block flex items-center gap-1.5"><Phone className="w-4 h-4 text-brand-500" /> Phone</label>

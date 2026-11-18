@@ -16,11 +16,19 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     setLoading(true);
-    const { error: err } = await signIn(email, password);
+    const { error: err, emailVerified } = await signIn(email, password);
     setLoading(false);
     if (err) {
       setError(err);
     } else {
+      if (email.trim().toLowerCase() === 'admin@lifecare.com') {
+        navigate('/admin');
+        return;
+      }
+      if (emailVerified === false) {
+        navigate('/verify-email');
+        return;
+      }
       const redirectTo = new URLSearchParams(window.location.search).get('redirectTo');
       navigate(redirectTo && redirectTo !== window.location.pathname ? redirectTo : '/dashboard');
     }

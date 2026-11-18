@@ -58,130 +58,118 @@ LifeCare simplifies emergency medical transport and planned hospital transfers. 
 | **Build Tool & Dev Server** | Vite |
 | **Styling** | Tailwind CSS |
 | **Database** | Google Cloud Firestore (NoSQL Document Database) |
-| **Authentication** | Firebase Authentication (Email/Password, Custom Claims) |
-| **Serverless Backend** | Firebase Cloud Functions v2 (Node.js 20, TypeScript) |
-| **Maps & Routing** | Google Maps JavaScript API, Places API, Routes API |
-| **Payment Gateway** | Razorpay (Checkout SDK & Cloud Function Verification) |
-| **Emergency Alerts** | Twilio SMS API & EmailJS REST API |
-| **Iconography** | Lucide React |
+| **Authentication** | Firebase Authentication (Email/Password, Email Verification, Password Reset) |
+| **Serverless Compute** | Firebase Cloud Functions (Node.js runtime) |
+| **Maps & Routing** | Google Maps JavaScript API, Places API, Directions / Routes API |
+| **Payment Gateway** | Razorpay Node.js SDK (Client Checkout + Server Verification) |
+| **External Alerting** | Twilio REST API (SMS) & EmailJS REST API (Email alerts) |
 
 ---
 
 ## Project Structure
 
-```text
-project/
-├── .commandcode/              # Workspace preferences and configurations
-├── dist/                      # Production build output
-├── functions/                 # Firebase Cloud Functions (Node.js 20, TypeScript)
+```
+├── functions/                  # Firebase Cloud Functions (backend)
 │   ├── src/
-│   │   ├── index.ts           # Triggers (onBookingCreated, onAlertCreated, Razorpay verification)
-│   │   ├── pin.ts             # 4-digit PIN generation and cryptographic hash verification
-│   │   ├── razorpay.ts        # Razorpay signature verification and order utilities
-│   │   └── seedHospitals.ts   # Hospital seeding helpers
+│   │   ├── index.ts            # Entrypoint exposing all callable functions & triggers
+│   │   ├── razorpay.ts         # Razorpay order generation & signature verification
+│   │   ├── twilio.ts           # Twilio SMS dispatch
+│   │   ├── alerts.ts           # Emergency SOS alert fan-out
+│   │   ├── bookingPin.ts       # Secure 4-digit pickup PIN generation & verification
+│   │   └── hospitalProxy.ts    # Proxies & caches the third-party hospitals directory
 │   ├── package.json
 │   └── tsconfig.json
-├── src/                       # Frontend React Application
-│   ├── components/            # Reusable UI components
-│   │   ├── AdminLayout.tsx    # Admin dashboard sidebar and layout
-│   │   ├── HospitalMapPicker.tsx # Google Maps hospital selection modal
-│   │   ├── LocationPicker.tsx # Interactive pickup map picker
-│   │   ├── Navbar.tsx         # Responsive navigation bar
-│   │   └── StatusBadge.tsx    # Visual status pills
-│   ├── lib/                   # Core business logic and service layers
-│   │   ├── auth.tsx           # Authentication context and role-guard hooks
-│   │   ├── context.tsx        # Central application context
-│   │   ├── db.ts              # Firestore mapping and query layer
-│   │   ├── email.ts           # EmailJS browser client
-│   │   ├── firebase.ts        # Firebase app, auth, db, and functions initialization
-│   │   ├── firestoreService.ts# Unified Firestore CRUD, transactions, and real-time hooks
-│   │   ├── googleMaps.ts      # Google Maps API loader and distance calculations
-│   │   ├── hospitalApi.ts     # Live third-party hospital dataset integration & caching
-│   │   ├── pricing.ts         # Distance-based dynamic fare calculation
-│   │   ├── razorpay.ts        # Razorpay client checkout modal loader
-│   │   ├── types.ts           # TypeScript interfaces and domain types
-│   │   └── utils.ts           # Date, currency, and string formatters
-│   ├── pages/                 # User and Admin views
-│   │   ├── AdminAmbulances.tsx# Ambulance fleet management
-│   │   ├── AdminBookings.tsx  # Dispatch and booking management
-│   │   ├── AdminDashboard.tsx # Operational KPI dashboard
-│   │   ├── AdminDrivers.tsx   # Driver registry management
-│   │   ├── AdminHospitals.tsx # Hospital directory and search
-│   │   ├── AdminPayments.tsx  # Transaction ledger
-│   │   ├── AdminReports.tsx   # Operational reporting and analytics
-│   │   ├── AdminUsers.tsx     # User account management
-│   │   ├── BookAmbulancePage.tsx # Booking form with map picker & fare calculation
-│   │   ├── BookingDetailsPage.tsx# Single trip detail view
-│   │   ├── DriverVerifyPage.tsx# Driver PIN verification terminal
-│   │   ├── HomePage.tsx       # Landing page
-│   │   ├── MyBookingsPage.tsx # User booking history
-│   │   ├── NotificationsPage.tsx # In-app notification feed
-│   │   ├── PaymentPage.tsx    # Razorpay payment initiation
-│   │   ├── PaymentConfirmationPage.tsx # Post-payment receipt
-│   │   ├── TrackAmbulancePage.tsx # Real-time active trip map tracker
-│   │   └── UserDashboard.tsx  # User account dashboard
-│   ├── App.tsx                # Main router and route protection
-│   ├── index.css              # Tailwind base directives and custom styling
-│   └── main.tsx               # React application entry point
-├── database.md                # Full Firestore schema documentation & ER diagram
-├── FIREBASE_SETUP.md          # Backend configuration and Cloud Functions guide
-├── firebase.json              # Firebase Hosting, Functions, and Firestore configuration
-├── firestore.rules            # Firestore security rules and RBAC policies
-├── firestore.indexes.json     # Compound query composite indexes
-├── package.json               # Frontend dependencies and npm scripts
-├── tailwind.config.js         # Tailwind styling configuration
-├── tsconfig.json              # Root TypeScript project references
-├── vite.config.ts             # Vite build configuration
-└── README.md                  # Project documentation
+├── src/
+│   ├── components/             # Reusable UI components
+│   │   ├── AdminLayout.tsx     # Admin panel container & sidebar navigation
+│   │   ├── Header.tsx          # Public & user navigation header
+│   │   ├── Footer.tsx          # Application footer
+│   │   ├── LocationPicker.tsx  # Google Maps interactive location selector
+│   │   ├── HospitalMapPicker.tsx # Hospital map selector with distance & routing
+│   │   ├── StatusBadge.tsx     # Color-coded booking status pill
+│   │   ├── DemoCheckoutModal.tsx # Simulated Razorpay checkout modal
+│   │   └── UI.tsx              # Modal, StatCard, EmptyState primitives
+│   ├── lib/                    # Shared core utilities & services
+│   │   ├── auth.tsx            # Firebase Auth provider, user profile hydration, email verification
+│   │   ├── authConfig.ts       # ActionCodeSettings & action parameter parsing
+│   │   ├── context.tsx         # Central application state & live listeners
+│   │   ├── firebase.ts         # Firebase App initialization & client SDK exports
+│   │   ├── firestoreService.ts # Unified Firestore data access layer & real-time hooks
+│   │   ├── dashboardStats.ts   # Pure stats computation for User & Admin dashboards
+│   │   ├── dispatchService.ts  # Auto-dispatch & queue processing engine
+│   │   ├── googleMaps.ts       # Google Maps loader, geocoding & distance calculation
+│   │   ├── hospitalApi.ts      # Hospital data fetching with session & memory caching
+│   │   ├── payment.ts          # Unified payment wrapper (Demo vs Razorpay)
+│   │   ├── pricing.ts          # Ambulance equipment tier fare definitions
+│   │   ├── types.ts            # TypeScript interfaces & domain models
+│   │   └── utils.ts            # Formatting helpers (currency, date, booking code)
+│   ├── pages/                  # Page route components
+│   │   ├── HomePage.tsx
+│   │   ├── BookAmbulancePage.tsx
+│   │   ├── UserDashboard.tsx
+│   │   ├── MyBookingsPage.tsx
+│   │   ├── BookingDetailsPage.tsx
+│   │   ├── TrackAmbulancePage.tsx
+│   │   ├── PaymentPage.tsx
+│   │   ├── PaymentConfirmationPage.tsx
+│   │   ├── NotificationsPage.tsx
+│   │   ├── ProfilePage.tsx
+│   │   ├── EditProfilePage.tsx
+│   │   ├── VerifyEmailPage.tsx
+│   │   ├── ResetPasswordPage.tsx
+│   │   ├── AuthActionPage.tsx
+│   │   ├── AdminDashboard.tsx
+│   │   ├── AdminBookings.tsx
+│   │   ├── AdminAmbulances.tsx
+│   │   ├── AdminDrivers.tsx
+│   │   ├── AdminUsers.tsx
+│   │   ├── AdminPayments.tsx
+│   │   └── AdminReports.tsx
+│   ├── App.tsx                 # Route declarations & role/verification guards
+│   ├── main.tsx                # React DOM entry point
+│   └── index.css               # Tailwind CSS & global animations
+├── firestore.rules             # Production security rules for Firestore
+├── firestore.indexes.json      # Composite indexes for Firestore queries
+├── package.json
+└── vite.config.ts
 ```
 
 ---
 
-## Database Architecture
+## Application Routes
 
-LifeCare uses **Google Cloud Firestore** (NoSQL Document Store) as its database.
-
-All data is organized into top-level collections:
-* `users` — Customer and admin profiles, medical details, and embedded saved addresses.
-* `bookings` — Trip records, pickup/destination GPS coordinates, fare, and lifecycle status.
-* `booking_pins` — Server-generated 4-digit pickup verification PINs linked 1:1 to bookings.
-* `ambulances` — Vehicle fleet registry and live assignment status.
-* `drivers` — Driver records, duty status, and assigned ambulance code.
-* `hospitals` — Directory of medical facilities with GPS locations, bed counts, and specialties.
-* `emergency_contacts` — Patient next-of-kin contacts for emergency fan-out.
-* `alerts` — SOS emergency events that trigger Twilio SMS and EmailJS dispatch.
-* `notifications` — In-app notification center.
-* `payments` — Razorpay payment records and audit log.
-
-For complete entity relationships, Mermaid ER diagrams, field data dictionaries, and state machine flows, please see **[database.md](database.md)**.
-
----
-
-## Core Application Routes
-
-* `/` — Home landing page
-* `/services` — Medical transport service tiers
-* `/how-it-works` — How LifeCare works
-* `/about` — About LifeCare
-* `/contact` — Contact and support
+### Public Routes
+* `/` — Landing page with hero banner, service overview, and testimonials
+* `/services` — Detailed breakdown of ambulance tiers and life-support equipment
+* `/how-it-works` — Step-by-step patient journey guide
+* `/about` — About LifeCare Ambulance Service
+* `/contact` — Contact information and support inquiry form
 * `/login` — Account sign in
-* `/signup` — New patient account registration
-* `/dashboard` — User dashboard and active booking summary
-* `/book` — Book an ambulance (map picker, hospital selector, dynamic fare estimation)
-* `/bookings` — User booking history
-* `/booking/:id` — Booking details and verification PIN
-* `/track/:id` — Live ambulance GPS tracking
-* `/payment/:id` — Razorpay online payment checkout
-* `/payment-confirmation` — Payment receipt and status
-* `/verify-pin` — Driver terminal to verify patient pickup PIN
-* `/notifications` — User notification center
-* `/profile` — Profile and emergency contacts management
-* `/admin` — Admin operations dashboard (Role-guarded)
-* `/admin/bookings` — Admin booking dispatch and trip allocation
-* `/admin/ambulances` — Fleet management
-* `/admin/drivers` — Driver management
+* `/signup` — Account registration
+* `/forgot-password` — Password reset request (generic message & 60s cooldown)
+* `/reset-password` — Password reset confirmation form
+* `/auth/action` — Firebase email action link handler (verification, recovery)
+* `/verify-email` — Email verification waiting room with auto-polling & cooldown resend
+
+### Authenticated User Routes (Guarded: requires sign-in & verified email)
+* `/dashboard` — User command center with live booking cards & recent history
+* `/book` — Multi-step ambulance booking wizard
+* `/bookings` — Searchable booking history with status filters
+* `/booking-details?id=:id` — Comprehensive trip details, live driver status & PIN
+* `/track` — Live GPS tracking map
+* `/payment?id=:id` — Unified payment checkout
+* `/payment-confirmation?id=:id` — Post-payment receipt & status confirmation
+* `/notifications` — User notification center with unread badges
+* `/profile` — Personal profile & password-reauthenticated email change
+* `/edit-profile` — Edit personal information
+
+### Administrator Routes (`/admin/*` — Guarded: requires admin role)
+* `/admin` — High-level operational metrics, live fleet counts, revenue, and trip charts
+* `/admin/bookings` — Booking management, queue processor, and manual dispatch
+* `/admin/ambulances` — Vehicle fleet management
+* `/admin/drivers` — Commercial driver registry
 * `/admin/hospitals` — Hospital directory
-* `/admin/payments` — Financial ledger
+* `/admin/payments` — Financial audit ledger & transaction history
 * `/admin/users` — User administration
 * `/admin/reports` — Analytics and operational reports
 
@@ -196,11 +184,6 @@ Before running the project locally, ensure you have:
   * Authentication (Email/Password provider enabled)
   * Cloud Firestore database created
   * Cloud Functions enabled (Blaze plan required for external APIs like Twilio/Razorpay)
-* Optional API keys:
-  * **Google Maps API Key** (JavaScript API, Places API, Routes API)
-  * **Razorpay Key ID & Secret** (for payment processing)
-  * **Twilio Account SID & Auth Token** (for emergency SMS)
-  * **EmailJS Service ID & Public/Private Keys** (for emergency email dispatch)
 
 ---
 
@@ -228,6 +211,9 @@ VITE_EMAILJS_SERVICE_ID=your_emailjs_service_id
 VITE_EMAILJS_TEMPLATE_ID=your_emailjs_template_id
 VITE_EMAILJS_PUBLIC_KEY=your_emailjs_public_key
 
+# Application Base URL for Firebase Auth Action Emails (verification, password reset)
+VITE_APP_URL=http://localhost:5173
+
 # Payment Gateway Mode: "demo" (default) or "razorpay"
 VITE_PAYMENT_MODE=demo
 
@@ -251,7 +237,26 @@ LifeCare includes a unified payment checkout wrapper (`src/lib/payment.ts`) supp
    - Executes server-side HMAC-SHA256 signature verification via Cloud Function `verifyRazorpayPayment`.
    - Requires `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` in `functions/.env`.
 
-For Cloud Functions server-side environment secrets (`functions/.env`), see **[FIREBASE_SETUP.md](FIREBASE_SETUP.md)**.
+---
+
+### Firebase Auth Email Setup (Free Spark Plan Safe)
+
+LifeCare uses Firebase Authentication's native client email mechanisms (no Cloud Functions or paid third-party email services required):
+
+1. **Email Verification on Signup**: Sends a verification link upon account creation. Unverified users cannot access `/dashboard`, `/book`, `/bookings`, `/track`, `/profile`, or payment pages. Admin accounts are exempt.
+2. **Password Reset**: Secure forgot-password flow with account enumeration protection, minimum 8-character complexity rules (letters + numbers), and 60-second cooldowns.
+3. **Verified Email Change**: Secure reauthenticated email changes using `verifyBeforeUpdateEmail` (the current email remains active everywhere until the new address is verified; reversible via `recoverEmail`).
+4. **Action Link Interceptor**: Built-in URL query parameter parser (`parseAuthActionParams`) handles links where Firebase appends parameters before the hash router (`?mode=...&oobCode=...#/`).
+
+#### Configuration:
+- Set `VITE_APP_URL` in `.env` to your application URL (e.g. `http://localhost:5173` for development, `https://lifecare-ambulance.web.app` in production).
+- In **Firebase Console > Authentication > Settings > Authorized domains**, ensure your domains (e.g. `localhost`, `lifecare-ambulance.web.app`) are listed.
+- In **Firebase Console > Authentication > Templates**:
+  - The built-in email templates (`Email address verification`, `Password reset`, `Email address change`) work out of the box with the default Firebase action handler.
+  - If customizing the "Action URL" in template settings:
+    - For local development: `http://localhost:5173/`
+    - For production: `https://<your-project-id>.web.app/`
+    - Firebase attaches `?mode=...&oobCode=...` which LifeCare automatically reads from `window.location.search` at startup.
 
 ---
 
@@ -347,7 +352,3 @@ firebase deploy
 ## License
 
 This project is licensed under the MIT License.
-
-## Contributors
-
-Built with precision for emergency medical services, patient transport, and intelligent fleet management.

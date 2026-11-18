@@ -107,7 +107,8 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() &&
-        isBookingOwner(request.resource);
+        isBookingOwner(request.resource) &&
+        (isAdmin() || request.auth.token.email_verified == true);
 
       allow update: if (isAdmin() && validBookingTransition()) ||
         (isBookingOwner(resource) && (

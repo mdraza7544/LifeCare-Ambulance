@@ -36,8 +36,8 @@ export default function SignupPage() {
     if (err) {
       setError(err);
     } else {
-      setSuccess('Account created successfully! Redirecting...');
-      setTimeout(() => navigate('/dashboard'), 1200);
+      setSuccess('Account created! A verification email has been sent to your inbox.');
+      setTimeout(() => navigate('/verify-email'), 1200);
     }
   };
 

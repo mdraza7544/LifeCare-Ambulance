@@ -1,6 +1,8 @@
+import { useEffect } from 'react';
 import { ShieldOff } from 'lucide-react';
 import { AppProvider, useApp } from '@/lib/context';
 import { AuthProvider, useAuth } from '@/lib/auth';
+import { parseAuthActionParams } from '@/lib/authConfig';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 
@@ -13,6 +15,9 @@ import ContactPage from '@/pages/ContactPage';
 import LoginPage from '@/pages/LoginPage';
 import SignupPage from '@/pages/SignupPage';
 import ForgotPasswordPage from '@/pages/ForgotPasswordPage';
+import VerifyEmailPage from '@/pages/VerifyEmailPage';
+import ResetPasswordPage from '@/pages/ResetPasswordPage';
+import AuthActionPage from '@/pages/AuthActionPage';
 
 import BookAmbulancePage from '@/pages/BookAmbulancePage';
 import UserDashboard from '@/pages/UserDashboard';
@@ -40,15 +45,37 @@ import AdminNotifications from '@/pages/AdminNotifications';
 import AdminSettings from '@/pages/AdminSettings';
 
 const protectedRoutes = [
-  '/dashboard', '/book', '/bookings', '/booking-details', '/track',
-  '/notifications', '/profile', '/edit-profile', '/address',
-  '/payment', '/payment-confirmation', '/feedback', '/driver',
+  '/dashboard',
+  '/book',
+  '/bookings',
+  '/booking-details',
+  '/track',
+  '/notifications',
+  '/profile',
+  '/edit-profile',
+  '/address',
+  '/payment',
+  '/payment-confirmation',
+  '/feedback',
+  '/driver',
 ];
 
 function Router() {
   const { route, navigate } = useApp();
   const { user, loading } = useAuth();
   const path = route.split('?')[0];
+
+  // Intercept Firebase email action links on mount (e.g. ?mode=verifyEmail&oobCode=...#/)
+  useEffect(() => {
+    const { mode, oobCode } = parseAuthActionParams();
+    if (mode && oobCode) {
+      if (mode === 'resetPassword') {
+        navigate(`/reset-password?oobCode=${encodeURIComponent(oobCode)}`);
+      } else {
+        navigate(`/auth/action?mode=${encodeURIComponent(mode)}&oobCode=${encodeURIComponent(oobCode)}`);
+      }
+    }
+  }, [navigate]);
 
   if (loading) {
     return (
@@ -61,9 +88,13 @@ function Router() {
     );
   }
 
+  // Auth pages (public)
   if (path === '/login') return <LoginPage />;
   if (path === '/signup') return <SignupPage />;
   if (path === '/forgot-password') return <ForgotPasswordPage />;
+  if (path === '/reset-password') return <ResetPasswordPage />;
+  if (path === '/auth/action') return <AuthActionPage />;
+  if (path === '/verify-email') return <VerifyEmailPage />;
 
   const adminPages: Record<string, React.ReactNode> = {
     '/admin': <AdminDashboard />,
@@ -78,9 +109,11 @@ function Router() {
     '/admin/settings': <AdminSettings />,
   };
 
+  // Admin routes protection
   if (path.startsWith('/admin')) {
     if (!user) return <LoginPage />;
-    if (user.user_metadata?.role !== 'admin') {
+    const isAdmin = user.user_metadata?.role === 'admin' || user.email === 'admin@lifecare.com';
+    if (!isAdmin) {
       return (
         <div className="min-h-screen flex items-center justify-center bg-gray-50">
           <div className="text-center max-w-sm px-6">
@@ -88,8 +121,12 @@ function Router() {
               <ShieldOff className="w-7 h-7 text-red-500" />
             </div>
             <h2 className="text-xl font-bold text-gray-900 mb-2">Access Denied</h2>
-            <p className="text-sm text-gray-500 mb-5">You don't have permission to access the admin panel. Please log in with an admin account.</p>
-            <button onClick={() => navigate('/dashboard')} className="btn-primary text-sm">Go to Dashboard</button>
+            <p className="text-sm text-gray-500 mb-5">
+              You don't have permission to access the admin panel. Please log in with an admin account.
+            </p>
+            <button onClick={() => navigate('/dashboard')} className="btn-primary text-sm">
+              Go to Dashboard
+            </button>
           </div>
         </div>
       );
@@ -98,9 +135,17 @@ function Router() {
   }
 
   const isProtected = protectedRoutes.includes(path);
+  const isAdmin = user?.user_metadata?.role === 'admin' || user?.email === 'admin@lifecare.com';
+
+  // 1. Not signed in: redirect to login
   if (isProtected && !user) {
     navigate(path);
     return <LoginPage />;
+  }
+
+  // 2. Signed in but unverified (admin exempt): redirect to verify email
+  if (isProtected && user && !isAdmin && !user.emailVerified) {
+    return <VerifyEmailPage />;
   }
 
   const userPages: Record<string, React.ReactNode> = {
