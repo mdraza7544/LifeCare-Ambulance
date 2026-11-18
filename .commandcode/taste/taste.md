@@ -2,3 +2,5 @@
 - Do not use hardcoded or dummy data — always fetch and display real data from the backend. Confidence: 0.9
 - Wants root-cause identification and fixes, not band-aid patches; explicitly asks to find and fix the underlying issue. Confidence: 0.8
 - When resuming work from a previous session, expects the assistant to pick up at the last completed step without repeating prior work, and to ask before making changes if important context is missing. Confidence: 0.8
+- Wants a summary of every file changed or created at the end of work, each labeled as "new", "fixed", or "unchanged but verified". Confidence: 0.8
+- Do not rewrite unrelated files; keep the existing UI style and reuse existing code/hooks/types rather than creating duplicates. Confidence: 0.8

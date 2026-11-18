@@ -90,6 +90,8 @@ export interface Hospital {
   lat: number;
   lng: number;
   type?: string;
+  specialties?: string[];
+  rating?: number;
 }
 
 export interface PaymentRecord {

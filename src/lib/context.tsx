@@ -122,7 +122,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }));
         }
       } catch {
-        // keep demo profile
+        // keep current profile state
       }
     })();
     return () => { active = false; };
@@ -179,7 +179,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const updateBookingStatus = (id: string, status: Booking['status']) => {
     setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, status } : b)));
     dbUpdateBookingStatus(id, status).catch(() => {
-      // demo/local bookings have no Firestore doc — ignore
+      // offline-friendly fallback
     });
   };
 

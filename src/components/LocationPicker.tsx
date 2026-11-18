@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { MapPin, Crosshair, Search, X, Check, Loader2 } from 'lucide-react';
-import { loadGoogleMaps } from '@/lib/googleMaps';
+import { loadGoogleMaps, geocodeAddress } from '@/lib/googleMaps';
 
 interface LocationPickerProps {
   value: string;
@@ -191,6 +191,13 @@ export default function LocationPicker({ value, onChange, label = 'Pickup Locati
           required
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={() => {
+            if (value && value.trim().length > 3) {
+              geocodeAddress(value).then((coords) => {
+                if (coords) onChange(value, coords);
+              });
+            }
+          }}
           className="input-field"
           placeholder="Enter address or use map"
         />

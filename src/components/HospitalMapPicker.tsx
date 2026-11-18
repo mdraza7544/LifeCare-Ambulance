@@ -3,7 +3,7 @@
  *
  * Features:
  *  - Auto-detects and displays the user's current location (with permission).
- *  - Displays nearby hospitals as markers on the map (from mockHospitals dataset).
+ *  - Displays nearby hospitals as markers on the map (fetched from third-party Hospitals API).
  *  - Search hospitals by name and city.
  *  - Click a hospital marker or list item to select it as the destination.
  *  - Draws a driving route from pickup â†’ destination using Google Maps Routes API.
@@ -15,11 +15,10 @@
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  MapPin, Search, X, Check, Loader2, Crosshair, Clock, Navigation, Bed, Phone, ChevronRight,
+  MapPin, X, Check, Loader2, Crosshair, Navigation, ChevronRight, AlertTriangle, RotateCw,
 } from 'lucide-react';
 import { loadGoogleMaps } from '@/lib/googleMaps';
-import { mockHospitals } from '@/lib/mockData';
-import { allWibHospitals } from '@/lib/wibHospitals';
+import { getHospitals } from '@/lib/hospitalApi';
 import type { Hospital } from '@/lib/types';
 import { haversineKm } from '@/lib/utils';
 
@@ -29,10 +28,11 @@ type AnyRef = any;
 interface HospitalMapPickerProps {
   pickupCoords: { lat: number; lng: number } | null;
   onHospitalSelect: (hospital: Hospital, routeInfo?: RouteInfo) => void;
+  onRouteInfo?: (info: RouteInfo | null) => void;
   selectedHospital: Hospital | null;
 }
 
-interface RouteInfo {
+export interface RouteInfo {
   distanceKm: number;
   distanceText: string;
   durationText: string;
@@ -45,6 +45,7 @@ const DEFAULT_CENTER = { lat: 12.9716, lng: 77.5946 };
 export default function HospitalMapPicker({
   pickupCoords,
   onHospitalSelect,
+  onRouteInfo,
   selectedHospital,
 }: HospitalMapPickerProps) {
   const [showMap, setShowMap] = useState(false);
@@ -69,22 +70,44 @@ export default function HospitalMapPicker({
   // AbortController to cancel in-flight route requests and prevent racing calls
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Memoize hospitals list to prevent recalculation on every render
-  const allHospitals = useMemo(() => [...mockHospitals, ...allWibHospitals], []);
+  // Third-party API hospitals
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [hospitalsLoading, setHospitalsLoading] = useState(false);
+  const [hospitalsError, setHospitalsError] = useState<string | null>(null);
+
+  const loadHospitals = useCallback(async (forceRefresh = false) => {
+    setHospitalsLoading(true);
+    setHospitalsError(null);
+    try {
+      const data = await getHospitals({ forceRefresh });
+      setHospitals(data);
+    } catch (err) {
+      console.error('[HospitalMapPicker] Error fetching hospitals from API:', err);
+      setHospitalsError(err instanceof Error ? err.message : 'Failed to load hospitals');
+    } finally {
+      setHospitalsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHospitals();
+  }, [loadHospitals]);
+
   const filteredHospitals = useMemo(() => {
-    const q = searchQuery.toLowerCase();
-    return allHospitals.filter((h) => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return hospitals;
+    return hospitals.filter((h) => {
       return (
         h.name.toLowerCase().includes(q) ||
         h.city.toLowerCase().includes(q) ||
         h.area.toLowerCase().includes(q)
       );
     });
-  }, [searchQuery, allHospitals]);
+  }, [searchQuery, hospitals]);
 
   // Decode polyline from Routes API encoded polyline format
   const decodePolyline = useCallback((encoded: string): AnyRef[] => {
-    let polyline: AnyRef[] = [];
+    const polyline: AnyRef[] = [];
     let index = 0;
     let lat = 0;
     let lng = 0;
@@ -236,6 +259,11 @@ export default function HospitalMapPicker({
         if (!route) {
           setRouteInfo(null);
           setLoading(false);
+          setMapError('No driving route found between pickup and this hospital.');
+          if (pathRef.current) {
+            pathRef.current.setMap(null);
+            pathRef.current = null;
+          }
           return;
         }
 
@@ -281,8 +309,12 @@ export default function HospitalMapPicker({
         }
         console.error('Routes API error:', error);
         setMapError(
-          error instanceof Error ? error.message : 'Failed to load route information'
+          error instanceof Error ? error.message : 'Failed to calculate driving route'
         );
+        if (pathRef.current) {
+          pathRef.current.setMap(null);
+          pathRef.current = null;
+        }
         setRouteInfo(null);
       } finally {
         setLoading(false);
@@ -472,10 +504,21 @@ export default function HospitalMapPicker({
 
     if (pickupCoords && selectedHospital) {
       drawRoute(pickupCoords, { lat: selectedHospital.lat, lng: selectedHospital.lng });
-    } else if (!selectedHospital) {
+    } else {
+      if (pathRef.current) {
+        pathRef.current.setMap(null);
+        pathRef.current = null;
+      }
       setRouteInfo(null);
     }
   }, [pickupCoords, selectedHospital?.id, drawRoute]);
+
+  // Propagate route info (distance/ETA) to the parent whenever it changes so the
+  // booking document can persist it. A ref avoids refiring when the parent's
+  // callback identity changes between renders.
+  const onRouteInfoRef = useRef(onRouteInfo);
+  useEffect(() => { onRouteInfoRef.current = onRouteInfo; }, [onRouteInfo]);
+  useEffect(() => { onRouteInfoRef.current?.(routeInfo ?? null); }, [routeInfo]);
 
   useEffect(() => {
     if (!mapInstanceRef.current || !mapsRef.current) return;
@@ -629,16 +672,25 @@ export default function HospitalMapPicker({
 
   /* ---- Render ---- */
 
-  if (mapError && !showMap) {
-    return (
-      <div className="mt-3 p-3 rounded-lg border border-red-200 bg-red-50 text-sm text-red-700 flex items-center gap-2">
-        <X className="w-4 h-4 shrink-0" /> {mapError}
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
+      {mapError && (
+        <div className="p-3 rounded-xl border border-red-200 bg-red-50 text-xs text-red-700 flex items-start gap-2 animate-fade-in">
+          <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <span className="font-semibold">Route error: </span>
+            <span>{mapError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMapError(null)}
+            className="text-red-500 hover:text-red-700 p-0.5"
+            aria-label="Dismiss error"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between bg-brand-50 rounded-xl p-4 border border-brand-100">
         <div className="flex items-center gap-2">
           <MapPin className="w-5 h-5 text-brand-600 shrink-0" />
@@ -750,54 +802,97 @@ export default function HospitalMapPicker({
             </div>
           )}
 
-          <div className="max-h-64 overflow-y-auto border-t border-gray-100 bg-white rounded-b-xl">
-            <div className="px-3 py-2 border-b border-gray-100">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                {filteredHospitals.length} hospital{filteredHospitals.length !== 1 ? 's' : ''} found
-              </span>
+          {selectedHospital && !pickupCoords && (
+            <div className="bg-amber-50 rounded-xl p-4 border border-amber-100 flex items-start gap-2">
+              <MapPin className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700">
+                Set a precise pickup location (use &quot;My Location&quot; or the map pin) to calculate the route, distance and ETA.
+              </p>
             </div>
-            {filteredHospitals.map((h) => {
-              const isSelected = selectedHospital?.id === h.id;
-              const dist = pickupCoords ? haversineKm(pickupCoords.lat, pickupCoords.lng, h.lat, h.lng) : null;
-              return (
+          )}
+
+          {selectedHospital && pickupCoords && mapError && (
+            <div className="bg-red-50 rounded-xl p-4 border border-red-200 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div className="text-xs text-red-700 flex-1">
+                <span className="font-semibold">Unable to calculate route:</span> {mapError}
+              </div>
+            </div>
+          )}
+
+          <div className="max-h-64 overflow-y-auto border-t border-gray-100 bg-white rounded-b-xl">
+            <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                {hospitalsLoading
+                  ? 'Loading hospitals...'
+                  : `${filteredHospitals.length} hospital${filteredHospitals.length !== 1 ? 's' : ''} found`}
+              </span>
+              {hospitalsLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-brand-600" />}
+            </div>
+
+            {hospitalsLoading && (
+              <div className="p-6 text-center text-xs text-gray-500 flex flex-col items-center justify-center gap-2">
+                <Loader2 className="w-5 h-5 animate-spin text-brand-600" />
+                <span>Loading hospitals from directory...</span>
+              </div>
+            )}
+
+            {hospitalsError && !hospitalsLoading && (
+              <div className="p-4 bg-red-50 text-red-700 text-xs flex items-center justify-between border-b border-red-100">
+                <span>{hospitalsError}</span>
                 <button
-                  key={h.id}
                   type="button"
-                  onClick={() => selectHospital(h)}
-                  className={`w-full flex items-center justify-between px-3 py-3 text-left transition-colors border-b border-gray-50 last:border-0 ${
-                    isSelected
-                      ? 'bg-brand-50 border-l-4 border-brand-600'
-                      : 'hover:bg-gray-50'
-                  }`}
+                  onClick={() => loadHospitals(true)}
+                  className="btn-secondary text-[11px] py-1 px-2.5 flex items-center gap-1 shrink-0 ml-2"
                 >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`font-bold text-sm ${isSelected ? 'text-brand-600' : 'text-gray-900'}`}>
-                        {h.name}
-                      </span>
-                      {h.emergency && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">
-                          Emergency
+                  <RotateCw className="w-3 h-3" /> Retry
+                </button>
+              </div>
+            )}
+
+            {!hospitalsLoading &&
+              filteredHospitals.map((h) => {
+                const isSelected = selectedHospital?.id === h.id;
+                const dist = pickupCoords ? haversineKm(pickupCoords.lat, pickupCoords.lng, h.lat, h.lng) : null;
+                return (
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => selectHospital(h)}
+                    className={`w-full flex items-center justify-between px-3 py-3 text-left transition-colors border-b border-gray-50 last:border-0 ${
+                      isSelected
+                        ? 'bg-brand-50 border-l-4 border-brand-600'
+                        : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`font-bold text-sm ${isSelected ? 'text-brand-600' : 'text-gray-900'}`}>
+                          {h.name}
+                        </span>
+                        {h.emergency && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">
+                            Emergency
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 truncate">
+                        {h.area}, {h.city}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">{h.address}</p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      {dist != null && (
+                        <span className="text-xs font-semibold text-gray-700">
+                          {dist < 1 ? Math.round(dist * 1000) + ' m' : dist.toFixed(1) + ' km'}
                         </span>
                       )}
+                      <ChevronRight className="w-3 h-3 text-gray-400 shrink-0" />
                     </div>
-                    <p className="text-xs text-gray-500 truncate">
-                      {h.area}, {h.city}
-                    </p>
-                    <p className="text-xs text-gray-500 truncate">{h.address}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1">
-                    {dist != null && (
-                      <span className="text-xs font-semibold text-gray-700">
-                        {dist < 1 ? Math.round(dist * 1000) + ' m' : dist.toFixed(1) + ' km'}
-                      </span>
-                    )}
-                    <ChevronRight className="w-3 h-3 text-gray-400 shrink-0" />
-                  </div>
-                </button>
-              );
-            })}
-            {filteredHospitals.length === 0 && (
+                  </button>
+                );
+              })}
+            {!hospitalsLoading && !hospitalsError && filteredHospitals.length === 0 && (
               <div className="px-3 py-4 text-center text-sm text-gray-500">
                 No hospitals match your search.
               </div>

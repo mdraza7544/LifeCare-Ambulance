@@ -114,9 +114,8 @@ Security rules enforcing ownership and the `admin` claim are in
 
 - `@supabase/supabase-js` dependency, `src/lib/supabase.ts`, and the entire
   `supabase/` directory (config + SQL migrations) were deleted.
-- The frontend still bundles demo data (`src/lib/mockData.ts`) purely as an
-  offline-friendly fallback while Firestore is empty or unreachable — no
-  Supabase code remains.
+- All legacy mock/demo data (`src/lib/mockData.ts`) has been removed; all features
+  query real Firestore collections via real-time onSnapshot listeners and third-party APIs.
 
 ## 8. Local development
 

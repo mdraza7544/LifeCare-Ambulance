@@ -1,16 +1,28 @@
-import { useEffect } from 'react';
-import { Ambulance, Hospital as HospitalIcon, User, Phone, Calendar, Clock, AlertTriangle, CheckCircle2, ArrowRight, ArrowLeft, ShieldCheck, Share2, Loader2, XCircle, Check, Smartphone, CreditCard, Banknote } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import {
+  Ambulance,
+  Hospital as HospitalIcon,
+  User,
+  Phone,
+  Calendar,
+  Clock,
+  AlertTriangle,
+  CheckCircle2,
+  ArrowRight,
+  ArrowLeft,
+  Loader2,
+  Check,
+} from 'lucide-react';
 import { useApp } from '@/lib/context';
 import { useAuth } from '@/lib/auth';
 import { PageHeader } from '@/components/UI';
-import { mockHospitals, ambulanceTypePricing } from '@/lib/mockData';
+import { ambulanceTypePricing } from '@/lib/pricing';
 import { generateBookingCode, formatCurrency } from '@/lib/utils';
-import { watchBookingPin } from '@/lib/db';
-import { createRazorpayOrder, verifyRazorpayPayment, openRazorpayCheckout, type RazorpayHandlerResponse } from '@/lib/razorpay';
-import { useState } from 'react';
+import { createBooking } from '@/lib/firestoreService';
+import { geocodeAddress } from '@/lib/googleMaps';
 import LocationPicker from '@/components/LocationPicker';
-import HospitalMapPicker from '@/components/HospitalMapPicker';
-import type { Booking, AmbulanceType, EmergencyLevel, BookingPin, Hospital } from '@/lib/types';
+import HospitalMapPicker, { type RouteInfo } from '@/components/HospitalMapPicker';
+import type { AmbulanceType, EmergencyLevel, Hospital } from '@/lib/types';
 
 const KOLKATA_TZ = 'Asia/Kolkata';
 
@@ -27,18 +39,22 @@ function kolkataDisplay(date: Date): string {
   return date.toLocaleString('en-IN', { timeZone: KOLKATA_TZ, dateStyle: 'medium', timeStyle: 'short' });
 }
 
+/** Maps the form's emergency level onto the shared data layer's priority enum. */
+function toPriority(level: EmergencyLevel): 'critical' | 'high' | 'normal' {
+  if (level === 'Critical') return 'critical';
+  if (level === 'Urgent') return 'high';
+  return 'normal';
+}
+
 export default function BookAmbulancePage() {
-  const { navigate, addBooking, updateBookingStatus, addresses } = useApp();
+  const { navigate, addresses } = useApp();
   const { user } = useAuth();
   const [step, setStep] = useState(1);
   const [done, setDone] = useState(false);
-  const [scheduledIso, setScheduledIso] = useState('');
-  const [lastBooking, setLastBooking] = useState<Booking | null>(null);
-  const [pin, setPin] = useState<BookingPin | null>(null);
-  const [pinCopied, setPinCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [payError, setPayError] = useState<string | null>(null);
-  const [payPending, setPayPending] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [scheduledIso, setScheduledIso] = useState('');
+  const [createdCode, setCreatedCode] = useState('');
   // Live clock so "Book Now" reflects the real current date & time.
   const [now, setNow] = useState(() => new Date());
 
@@ -54,48 +70,45 @@ export default function BookAmbulancePage() {
     bookingType: 'now' as 'now' | 'scheduled',
     date: '',
     time: '',
-    paymentMethod: 'Cash on service',
   });
   const [selectedHospital, setSelectedHospital] = useState<Hospital | null>(null);
+  const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Subscribe to the server-generated verification PIN once a booking is made.
-  // The PIN is created by the `onBookingCreated` Cloud Function (server-side),
-  // so it appears here shortly after the booking doc is written — it is never
-  // generated on the client.
-  useEffect(() => {
-    if (!lastBooking) return;
-    setPin(null);
-    setPinCopied(false);
-    return watchBookingPin(lastBooking.id, setPin);
-  }, [lastBooking]);
+  const price = ambulanceTypePricing[form.ambulanceType] ?? 1800;
 
-  const handleSharePin = async () => {
-    if (!pin || !lastBooking) return;
-    const text = `LifeCare pickup PIN for booking ${lastBooking.bookingCode}: ${pin.pin}. Share this only with your assigned ambulance driver.`;
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: 'LifeCare Pickup PIN', text });
-      } else {
-        await navigator.clipboard.writeText(text);
-        setPinCopied(true);
-        setTimeout(() => setPinCopied(false), 2000);
-      }
-    } catch {
-      // share dismissed / clipboard denied — no action needed
+  const update = (k: string, v: string) => setForm({ ...form, [k]: v });
+
+  const setPickup = (address: string, coords?: { lat: number; lng: number }) =>
+    setForm((prev) => ({ ...prev, pickup: address, pickupCoords: coords ?? null }));
+
+  const handleSelectAddress = async (address: string) => {
+    setForm((prev) => ({ ...prev, pickup: address, pickupCoords: null }));
+    const coords = await geocodeAddress(address);
+    if (coords) {
+      setForm((prev) => (prev.pickup === address ? { ...prev, pickupCoords: coords } : prev));
     }
   };
 
-  const price = ambulanceTypePricing[form.ambulanceType] || 1800;
-
-  const update = (k: string, v: string | { lat: number; lng: number } | null) => setForm({ ...form, [k]: v });
-
-  const setPickup = (address: string, coords?: { lat: number; lng: number }) =>
-    setForm({ ...form, pickup: address, pickupCoords: coords ?? form.pickupCoords });
+  // If a default address is loaded (or user has a saved address with no coords), geocode it
+  useEffect(() => {
+    const defaultAddr = addresses.find((a) => a.isDefault)?.fullAddress;
+    const addr = form.pickup || defaultAddr;
+    if (addr && !form.pickupCoords) {
+      if (!form.pickup && defaultAddr) {
+        setForm((prev) => ({ ...prev, pickup: defaultAddr }));
+      }
+      geocodeAddress(addr).then((coords) => {
+        if (coords) {
+          setForm((prev) => (!prev.pickupCoords ? { ...prev, pickupCoords: coords } : prev));
+        }
+      });
+    }
+  }, [addresses]);
 
   const setDestinationHospital = (hospital: Hospital) => {
     setSelectedHospital(hospital);
@@ -115,7 +128,7 @@ export default function BookAmbulancePage() {
       : false;
 
   const canNext = () => {
-    if (step === 1) return form.patientName && form.phone && form.pickup && form.destination;
+    if (step === 1) return Boolean(form.patientName && form.phone && form.pickup && form.destination);
     if (step === 2) {
       if (!form.ambulanceType || !form.emergencyLevel) return false;
       if (form.bookingType === 'now') return true;
@@ -125,110 +138,47 @@ export default function BookAmbulancePage() {
   };
 
   const handleSubmit = async () => {
-    if (submitting) return; // prevent double-submit → duplicate bookings
-    setPayError(null);
-    setPayPending(null);
+    if (submitting) return;
+    if (!user) {
+      setSubmitError('You must be signed in to book an ambulance.');
+      return;
+    }
+    setSubmitError(null);
     setSubmitting(true);
-
-    // Create the booking once (status "Scheduled" = pending/unconfirmed until
-    // paid). On a payment retry we reuse the same booking so no duplicate is
-    // ever created.
-    let booking = lastBooking;
-    if (!booking) {
-      const scheduledFor =
+    try {
+      const scheduledTime =
         form.bookingType === 'now'
           ? new Date().toISOString()
           : new Date(`${form.date}T${form.time}:00+05:30`).toISOString();
-      booking = {
-        id: Math.random().toString(36).slice(2),
-        bookingCode: generateBookingCode(),
-        patientName: form.patientName,
-        phone: form.phone,
+      const bookingCode = generateBookingCode();
+      await createBooking({
+        userId: user.id,
         pickup: form.pickup,
         destination: form.destination,
+        priority: toPriority(form.emergencyLevel),
+        status: 'pending',
+        paymentStatus: 'pending',
+        scheduledTime,
+        amount: price,
+        bookingCode,
+        patientName: form.patientName,
+        phone: form.phone,
+        ambulanceType: form.ambulanceType,
+        emergencyLevel: form.emergencyLevel,
         pickupLat: form.pickupCoords?.lat,
         pickupLng: form.pickupCoords?.lng,
         destinationLat: form.destinationCoords?.lat,
         destinationLng: form.destinationCoords?.lng,
-        ambulanceType: form.ambulanceType,
-        emergencyLevel: form.emergencyLevel,
-        bookingType: form.bookingType,
-        scheduledFor,
-        status: 'Scheduled',
-        amount: price,
-        paymentMethod: form.paymentMethod,
-        createdAt: new Date().toISOString(),
-      };
-      setScheduledIso(scheduledFor);
-      await addBooking(booking); // writes to Firestore — required for order creation
-      setLastBooking(booking);
-    }
-
-    // Immutable refs for the Razorpay callbacks.
-    const bookingId = booking.id;
-    const bookingCode = booking.bookingCode;
-    const patientName = booking.patientName;
-    const phone = booking.phone;
-    const payMethod = form.paymentMethod;
-
-    // Cash on service — no online payment; confirm directly.
-    if (payMethod === 'Cash on service') {
-      setSubmitting(false);
-      setDone(true);
-      return;
-    }
-
-    // UPI / Card — open Razorpay Checkout and confirm ONLY on verified payment.
-    // The amount comes from the booking doc on the server (createRazorpayOrder);
-    // the signature is verified on the backend (verifyRazorpayPayment).
-
-    // Authentication guard: Razorpay order creation requires a signed-in user.
-    if (!user) {
-      setPayError('You must be signed in to pay. Please sign in and try again.');
-      setSubmitting(false);
-      return;
-    }
-
-    try {
-      const order = await createRazorpayOrder(bookingId);
-      const opened = await openRazorpayCheckout({
-        order,
-        bookingCode,
-        patientName,
-        phone,
-        email: user?.email || '',
-        method: payMethod === 'UPI' ? 'UPI' : 'Card',
-        onDismiss: () => {
-          setPayError('Payment cancelled. Your booking is saved but not confirmed — tap Confirm Booking to pay again.');
-          setSubmitting(false);
-        },
-        onSuccess: async (response: RazorpayHandlerResponse) => {
-          try {
-            const result = await verifyRazorpayPayment({ ...response, bookingId });
-            if (result.status === 'paid') {
-              // Backend already set the booking to "On Going" + Paid; sync local state.
-              updateBookingStatus(bookingId, 'On Going');
-              setSubmitting(false);
-              setDone(true);
-            } else if (result.status === 'pending') {
-              setPayPending('Payment authorized — awaiting confirmation. Your booking will update shortly.');
-              setSubmitting(false);
-            } else {
-              setPayError('Payment verification failed. Please contact support.');
-              setSubmitting(false);
-            }
-          } catch (err) {
-            setPayError(err instanceof Error ? err.message : 'Payment verification failed.');
-            setSubmitting(false);
-          }
-        },
+        distanceText: routeInfo?.distanceText,
+        durationText: routeInfo?.durationText,
+        distanceKm: routeInfo?.distanceKm,
       });
-      if (!opened) {
-        setPayError('Could not open the payment window. Please try again.');
-        setSubmitting(false);
-      }
+      setScheduledIso(scheduledTime);
+      setCreatedCode(bookingCode);
+      setDone(true);
     } catch (err) {
-      setPayError(err instanceof Error ? err.message : 'Could not start the payment. Please try again.');
+      setSubmitError(err instanceof Error ? err.message : 'Could not submit your booking. Please try again.');
+    } finally {
       setSubmitting(false);
     }
   };
@@ -237,57 +187,33 @@ export default function BookAmbulancePage() {
     return (
       <div className="max-w-2xl mx-auto px-4 py-16 animate-fade-in">
         <div className="card p-10 text-center">
-          <div className="w-20 h-20 rounded-full bg-green-50 flex items-center justify-center mx-auto mb-5">
-            <CheckCircle2 className="w-10 h-10 text-green-600" />
+          <div className="w-20 h-20 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-5">
+            <CheckCircle2 className="w-10 h-10 text-amber-600" />
           </div>
-          <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Booking Confirmed!</h2>
-          <p className="text-gray-600 mb-6">Your ambulance has been booked successfully. You'll receive updates on your phone.</p>
+          <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Booking Submitted!</h2>
+          <p className="text-gray-600 mb-6">
+            Your booking request has been received and is <span className="font-semibold text-amber-700">awaiting admin approval</span>.
+            You'll see status updates in My Bookings — once accepted, complete payment there to confirm.
+          </p>
           <div className="bg-brand-50 rounded-xl p-5 mb-6 text-left">
             <div className="grid grid-cols-2 gap-3 text-sm">
+              <div><span className="text-gray-500">Booking code:</span> <span className="font-semibold text-gray-900">{createdCode}</span></div>
               <div><span className="text-gray-500">Patient:</span> <span className="font-semibold text-gray-900">{form.patientName}</span></div>
-              <div><span className="text-gray-500">Ambulance:</span> <span className="font-semibold text-gray-900">{form.ambulanceType}</span></div>
               <div><span className="text-gray-500">From:</span> <span className="font-semibold text-gray-900">{form.pickup}</span></div>
               <div><span className="text-gray-500">To:</span> <span className="font-semibold text-gray-900">{form.destination}</span></div>
-              <div><span className="text-gray-500">Type:</span> <span className="font-semibold text-gray-900">{form.bookingType === 'now' ? 'Book Now' : 'Scheduled'}</span></div>
-              <div><span className="text-gray-500">Date & Time:</span> <span className="font-semibold text-gray-900">{kolkataDisplay(new Date(scheduledIso))}</span></div>
-              <div><span className="text-gray-500">Amount:</span> <span className="font-semibold text-brand-600">{formatCurrency(price)}</span></div>
-              <div><span className="text-gray-500">Payment:</span> <span className="font-semibold text-gray-900">{form.paymentMethod}</span></div>
-            </div>
-          </div>
-
-          {/* Pickup verification PIN — generated & stored securely on the backend */}
-          <div className="bg-gradient-to-br from-teal-50 to-brand-50 border border-teal-200 rounded-xl p-5 mb-6 text-left">
-            <div className="flex items-center gap-2 mb-2">
-              <ShieldCheck className="w-5 h-5 text-teal-600" />
-              <h3 className="font-bold text-gray-900 text-sm">Pickup Verification PIN</h3>
-            </div>
-            <p className="text-xs text-gray-600 mb-4">Share this 4-digit PIN with your assigned ambulance driver. The driver must enter it to verify the booking and confirm patient pickup. Keep it private.</p>
-            <div className="flex items-center justify-center gap-3 mb-4">
-              {pin ? (
-                <div className="flex gap-2">
-                  {pin.pin.split('').map((d, i) => (
-                    <span key={i} className="w-12 h-14 rounded-xl bg-white border-2 border-teal-300 flex items-center justify-center text-2xl font-extrabold text-teal-700 tracking-widest shadow-sm">{d}</span>
-                  ))}
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 text-gray-500">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span className="text-sm font-medium">Generating secure PIN…</span>
-                </div>
+              <div><span className="text-gray-500">Ambulance:</span> <span className="font-semibold text-gray-900">{form.ambulanceType}</span></div>
+              <div><span className="text-gray-500">Priority:</span> <span className="font-semibold text-gray-900">{form.emergencyLevel}</span></div>
+              <div className="col-span-2"><span className="text-gray-500">Schedule:</span> <span className="font-semibold text-gray-900">{form.bookingType === 'now' ? `Book Now · ${kolkataDisplay(new Date(scheduledIso))}` : kolkataDisplay(new Date(scheduledIso))}</span></div>
+              {routeInfo && (
+                <div className="col-span-2"><span className="text-gray-500">Distance / ETA:</span> <span className="font-semibold text-gray-900">{routeInfo.distanceText} · {routeInfo.durationText}</span></div>
               )}
+              <div><span className="text-gray-500">Amount:</span> <span className="font-semibold text-brand-600">{formatCurrency(price)}</span></div>
+              <div><span className="text-gray-500">Status:</span> <span className="font-semibold text-amber-700">Pending</span></div>
             </div>
-            {pin && (
-              <div className="flex gap-2 justify-center">
-                <button onClick={handleSharePin} className="btn-primary text-sm">
-                  {pinCopied ? <><CheckCircle2 className="w-4 h-4" /> Copied!</> : <><Share2 className="w-4 h-4" /> Share PIN</>}
-                </button>
-              </div>
-            )}
           </div>
-
           <div className="flex gap-3 justify-center">
-            <button onClick={() => navigate('/track')} className="btn-primary">Track Ambulance</button>
-            <button onClick={() => navigate('/bookings')} className="btn-secondary">View My Bookings</button>
+            <button onClick={() => navigate('/bookings')} className="btn-primary">View My Bookings</button>
+            <button onClick={() => { setDone(false); setStep(1); }} className="btn-secondary">Book Another</button>
           </div>
         </div>
       </div>
@@ -296,7 +222,7 @@ export default function BookAmbulancePage() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 animate-fade-in">
-      <PageHeader title="Book Ambulance" subtitle="Complete the form below to book an ambulance" icon={<Ambulance className="w-5 h-5" />} />
+      <PageHeader title="Book Ambulance" subtitle="Complete the form below to request an ambulance" icon={<Ambulance className="w-5 h-5" />} />
 
       {/* Stepper */}
       <div className="flex items-center justify-between mb-8">
@@ -338,7 +264,12 @@ export default function BookAmbulancePage() {
               {addresses.length > 0 && (
                 <div className="flex gap-2 mt-2 flex-wrap">
                   {addresses.map((a) => (
-                    <button key={a.id} type="button" onClick={() => update('pickup', a.fullAddress)} className="text-xs px-2.5 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-brand-50 hover:text-brand-600 transition-colors">
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => handleSelectAddress(a.fullAddress)}
+                      className="text-xs px-2.5 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-brand-50 hover:text-brand-600 transition-colors"
+                    >
                       {a.label}
                     </button>
                   ))}
@@ -350,6 +281,7 @@ export default function BookAmbulancePage() {
               <HospitalMapPicker
                 pickupCoords={form.pickupCoords}
                 onHospitalSelect={setDestinationHospital}
+                onRouteInfo={setRouteInfo}
                 selectedHospital={selectedHospital}
               />
               {selectedHospital && (
@@ -363,6 +295,7 @@ export default function BookAmbulancePage() {
                     type="button"
                     onClick={() => {
                       setSelectedHospital(null);
+                      setRouteInfo(null);
                       setForm((prev) => ({ ...prev, destination: '', destinationCoords: null }));
                     }}
                     className="text-xs text-red-600 hover:text-red-800 underline"
@@ -444,42 +377,12 @@ export default function BookAmbulancePage() {
                 )}
               </div>
             )}
-            <div>
-              <label className="text-sm font-semibold text-gray-700 mb-2 block">Payment Method</label>
-              <div className="grid grid-cols-3 gap-3">
-                {['Cash on service', 'UPI', 'Card'].map((m) => (
-                  <button key={m} type="button" onClick={() => update('paymentMethod', m)} className={`p-3 rounded-xl border-2 font-semibold text-sm transition-all ${form.paymentMethod === m ? 'border-brand-500 bg-brand-50 text-brand-600' : 'border-gray-200 text-gray-600 hover:border-brand-200'}`}>
-                    {m}
-                  </button>
-                ))}
-              </div>
-              {form.paymentMethod === 'UPI' && (
-                <div className="card p-6 animate-fade-in mt-4">
-                  <div className="flex items-start gap-3">
-                    <div className="w-11 h-11 rounded-lg bg-brand-50 flex items-center justify-center shrink-0"><Smartphone className="w-5 h-5 text-brand-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-gray-900">UPI Payment</h3>
-                      <p className="text-xs text-gray-500 mt-1">Pick any UPI app in Razorpay's checkout — GPay, PhonePe, Paytm, BHIM and more. Approve the collect request or enter your UPI PIN to confirm.</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {form.paymentMethod === 'Card' && (
-                <div className="card p-6 animate-fade-in mt-4">
-                  <div className="flex items-start gap-3">
-                    <div className="w-11 h-11 rounded-lg bg-brand-50 flex items-center justify-center shrink-0"><CreditCard className="w-5 h-5 text-brand-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-gray-900">Secure Card Payment</h3>
-                      <p className="text-xs text-gray-500 mt-1">You'll enter your debit or credit card details in Razorpay's PCI-compliant checkout. Visa, Mastercard, RuPay and Amex are supported. Your card details never touch the LifeCare servers.</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {form.paymentMethod === 'Cash on service' && (
-                <div className="card p-6 animate-fade-in mt-4">
-                  <div className="flex items-center gap-3 text-gray-600"><Banknote className="w-5 h-5 text-brand-500" /><p className="text-sm">Pay {formatCurrency(price)} directly to the driver after the service is completed.</p></div>
-                </div>
-              )}
+            <div className="rounded-xl bg-amber-50 border border-amber-100 p-4 flex items-start gap-3">
+              <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <p className="text-xs text-gray-600">
+                Your request is created as <span className="font-semibold text-amber-700">Pending</span>. An admin will review and accept it.
+                After acceptance, you'll complete payment to confirm the booking.
+              </p>
             </div>
           </div>
         )}
@@ -494,30 +397,23 @@ export default function BookAmbulancePage() {
               <div className="flex justify-between text-sm"><span className="text-gray-500">Destination</span><span className="font-semibold text-gray-900">{form.destination}</span></div>
               <div className="flex justify-between text-sm"><span className="text-gray-500">Ambulance Type</span><span className="font-semibold text-gray-900">{form.ambulanceType}</span></div>
               <div className="flex justify-between text-sm"><span className="text-gray-500">Emergency Level</span><span className="font-semibold text-gray-900">{form.emergencyLevel}</span></div>
+              {routeInfo && (
+                <div className="flex justify-between text-sm"><span className="text-gray-500">Distance / ETA</span><span className="font-semibold text-gray-900">{routeInfo.distanceText} · {routeInfo.durationText}</span></div>
+              )}
               <div className="flex justify-between text-sm"><span className="text-gray-500">Schedule</span><span className="font-semibold text-gray-900">{form.bookingType === 'now' ? `Book Now · ${kolkataDisplay(now)}` : `${form.date} at ${form.time}`}</span></div>
-              <div className="flex justify-between text-sm"><span className="text-gray-500">Payment</span><span className="font-semibold text-gray-900">{form.paymentMethod}</span></div>
               <div className="border-t border-brand-100 pt-3 flex justify-between"><span className="font-bold text-gray-700">Total Amount</span><span className="font-extrabold text-brand-600 text-lg">{formatCurrency(price)}</span></div>
             </div>
           </div>
         )}
 
-        {step === 3 && (payError || payPending) && (
-          <div className="mt-6 space-y-2">
-            {payError && (
-              <p className="text-sm text-red-600 flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl p-3">
-                <XCircle className="w-4 h-4 shrink-0" /> {payError}
-              </p>
-            )}
-            {payPending && (
-              <p className="text-sm text-amber-600 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
-                <Clock className="w-4 h-4 shrink-0" /> {payPending}
-              </p>
-            )}
-          </div>
+        {step === 3 && submitError && (
+          <p className="mt-6 text-sm text-red-600 flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl p-3">
+            <AlertTriangle className="w-4 h-4 shrink-0" /> {submitError}
+          </p>
         )}
 
         <div className="flex justify-between mt-8">
-          <button onClick={() => step > 1 ? setStep(step - 1) : navigate('/')} className="btn-ghost">
+          <button onClick={() => (step > 1 ? setStep(step - 1) : navigate('/'))} className="btn-ghost">
             <ArrowLeft className="w-4 h-4" /> Back
           </button>
           {step < 3 ? (
@@ -526,7 +422,7 @@ export default function BookAmbulancePage() {
             </button>
           ) : (
             <button onClick={handleSubmit} disabled={submitting} className="btn-primary">
-              {submitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing...</> : <><CheckCircle2 className="w-4 h-4" /> Confirm Booking</>}
+              {submitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Submitting...</> : <><CheckCircle2 className="w-4 h-4" /> Submit Booking</>}
             </button>
           )}
         </div>
@@ -534,4 +430,3 @@ export default function BookAmbulancePage() {
     </div>
   );
 }
-

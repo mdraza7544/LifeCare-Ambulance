@@ -54,3 +54,31 @@ export function loadGoogleMaps(): Promise<GoogleMaps> {
   return loadPromise;
 }
 
+/**
+ * Geocodes an address string to `{ lat, lng }` coordinates using the Google Maps Geocoder.
+ * Returns null if geocoding fails or no valid coordinates are found.
+ */
+export async function geocodeAddress(
+  address: string,
+): Promise<{ lat: number; lng: number } | null> {
+  const trimmed = address.trim();
+  if (!trimmed) return null;
+  try {
+    const maps = await loadGoogleMaps();
+    const geocoder = new maps.Geocoder();
+    const res = await geocoder.geocode({ address: trimmed });
+    const loc = res?.results?.[0]?.geometry?.location;
+    if (loc) {
+      const lat = typeof loc.lat === 'function' ? loc.lat() : Number(loc.lat);
+      const lng = typeof loc.lng === 'function' ? loc.lng() : Number(loc.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        return { lat, lng };
+      }
+    }
+  } catch (err) {
+    console.warn('[googleMaps] geocodeAddress failed for:', trimmed, err);
+  }
+  return null;
+}
+
+

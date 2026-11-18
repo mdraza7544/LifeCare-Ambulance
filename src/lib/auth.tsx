@@ -75,7 +75,7 @@ async function loadAuthUser(fbUser: FirebaseUser): Promise<AuthUser> {
     const snap = await getDoc(doc(db, 'users', fbUser.uid));
     if (snap.exists()) {
       const d = snap.data();
-      metadata.full_name = (d.full_name as string) || metadata.full_name;
+      metadata.full_name = (d.name as string) || (d.full_name as string) || metadata.full_name;
       metadata.phone = (d.phone as string) || metadata.phone;
       metadata.role = ((d.role as AuthUserMetadata['role']) || 'user');
     }
@@ -115,20 +115,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       await updateProfile(cred.user, { displayName: fullName });
-      // Persist profile; non-fatal so a rules/network issue doesn't block signup.
+
+      const nowIso = new Date().toISOString();
+      const userDocData = {
+        uid: cred.user.uid,
+        name: fullName.trim(),
+        full_name: fullName.trim(),
+        email: email.trim().toLowerCase(),
+        phone: phone.trim(),
+        role: 'user',
+        status: 'active',
+        createdAt: nowIso,
+        created_at: nowIso,
+      };
+
       try {
-        await setDoc(doc(db, 'users', cred.user.uid), {
-          full_name: fullName,
-          email,
-          phone,
-          role: 'user',
-          status: 'Active',
-          created_at: new Date().toISOString(),
-        });
+        await setDoc(doc(db, 'users', cred.user.uid), userDocData, { merge: true });
       } catch (profileErr) {
-        console.warn('Profile document write failed:', profileErr);
+        console.error('Failed to create user Firestore document on signup:', profileErr);
+        try {
+          await setDoc(doc(db, 'users', cred.user.uid), userDocData, { merge: true });
+        } catch (retryErr) {
+          console.error('Retry create user document also failed:', retryErr);
+        }
       }
-      setUser({ id: cred.user.uid, email, user_metadata: { full_name: fullName, phone, role: 'user' } });
+
+      setUser({
+        id: cred.user.uid,
+        email: cred.user.email || email,
+        user_metadata: { full_name: fullName, phone, role: 'user' },
+      });
       return { error: null };
     } catch (err) {
       return { error: friendlyError(err) };

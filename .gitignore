@@ -26,6 +26,7 @@ dist-ssr
 # These single files are edited directly; no .env.example templates are kept.
 .env
 .env.*
+!.env.example
 functions/.env
 functions/lib
 functions/node_modules

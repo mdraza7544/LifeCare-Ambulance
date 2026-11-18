@@ -13,6 +13,15 @@ interface ImportMetaEnv {
   readonly VITE_EMAILJS_SERVICE_ID: string;
   readonly VITE_EMAILJS_TEMPLATE_ID: string;
   readonly VITE_EMAILJS_PUBLIC_KEY: string;
+
+  // Google Maps
+  readonly VITE_GOOGLE_MAPS_API_KEY?: string;
+
+  // Third-party Hospitals API
+  readonly VITE_HOSPITALS_API_URL?: string;
+
+  // Payment Mode ('demo' | 'razorpay')
+  readonly VITE_PAYMENT_MODE?: 'demo' | 'razorpay';
 }
 
 interface ImportMeta {

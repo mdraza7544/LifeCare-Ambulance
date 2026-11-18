@@ -530,7 +530,7 @@ async function fetchWithRetry(
 }
 
 /** Creates a Razorpay order for a booking. Called from the payment page via HTTP. */
-export const createRazorpayOrder = onRequest(async (req, res) => {
+export const createRazorpayOrder = onRequest({ cors: true }, async (req, res) => {
   setRazorpayCorsHeaders(res);
 
   if (req.method === 'OPTIONS') {
@@ -570,12 +570,16 @@ export const createRazorpayOrder = onRequest(async (req, res) => {
     return;
   }
   const booking = bookingSnap.data() ?? {};
-  if (booking.user_id !== uid) {
+  // Schema-agnostic: read camelCase (shared admin data layer) with snake_case
+  // (legacy docs / Cloud Functions) fallback so both booking shapes work.
+  const bookingUserId = booking.user_id ?? booking.userId;
+  if (bookingUserId !== uid) {
     res.status(403).json({ error: 'This booking does not belong to you.' });
     return;
   }
   // Prevent creating a new order for a booking that has already been paid.
-  if (booking.payment_status === 'Paid') {
+  const bookingPaymentStatus = booking.payment_status ?? booking.paymentStatus;
+  if (bookingPaymentStatus === 'Paid' || bookingPaymentStatus === 'paid') {
     res.status(400).json({ error: 'This booking has already been paid.' });
     return;
   }
@@ -596,7 +600,7 @@ export const createRazorpayOrder = onRequest(async (req, res) => {
       body: JSON.stringify({
         amount: amountInPaise,
         currency: 'INR',
-        receipt: booking.booking_code ?? bookingId,
+        receipt: booking.booking_code ?? booking.bookingCode ?? bookingId,
         notes: { booking_id: bookingId, user_id: uid },
       }),
     });
@@ -631,7 +635,7 @@ export const createRazorpayOrder = onRequest(async (req, res) => {
     amount: order.amount,
     currency: order.currency,
     keyId: razorpayKeyId, // public key id — safe for the browser
-    bookingCode: String(booking.booking_code ?? ''),
+    bookingCode: String(booking.booking_code ?? booking.bookingCode ?? ''),
   });
 });
 
@@ -660,31 +664,69 @@ interface PaymentContext {
 async function finalizePayment(ctx: PaymentContext): Promise<'paid' | 'pending' | 'failed'> {
   const status = toPaymentStatus(ctx.razorpayStatus);
   const now = isoNow();
-  await firestore.collection('payments').doc(ctx.orderId).set(
-    {
-      razorpay_order_id: ctx.orderId,
-      razorpay_payment_id: ctx.paymentId,
-      booking_id: ctx.bookingId,
-      user_id: ctx.uid ?? null,
-      method: ctx.method ?? null,
-      status,
-      verified: status !== 'failed',
-      verified_at: now,
-      updated_at: now,
-    },
-    { merge: true },
-  );
+
+  // Retrieve booking details to guarantee accurate amount & user association
+  let amount = 0;
+  let bookingUserId = ctx.uid;
+  try {
+    const bookingSnap = await firestore.collection('bookings').doc(ctx.bookingId).get();
+    if (bookingSnap.exists) {
+      const bData = bookingSnap.data() ?? {};
+      amount = Number(bData.amount ?? 0);
+      if (!bookingUserId) {
+        bookingUserId = String(bData.userId ?? bData.user_id ?? '');
+      }
+    }
+  } catch (err) {
+    logger.warn('Could not read booking details during finalizePayment', err);
+  }
+
+  const paymentDocId = ctx.paymentId || ctx.orderId;
+  const paymentPayload = {
+    id: paymentDocId,
+    bookingId: ctx.bookingId,
+    booking_id: ctx.bookingId,
+    userId: bookingUserId ?? '',
+    user_id: bookingUserId ?? null,
+    amount,
+    method: ctx.method ? `Razorpay (${ctx.method})` : 'Razorpay',
+    status,
+    createdAt: now,
+    created_at: now,
+    razorpay_order_id: ctx.orderId,
+    razorpay_payment_id: ctx.paymentId,
+    verified: status !== 'failed',
+    verified_at: now,
+    updated_at: now,
+  };
+
+  // Idempotent write using the payment ID
+  await firestore.collection('payments').doc(paymentDocId).set(paymentPayload, { merge: true });
+
+  // Also update orderId doc if distinct, so order-based webhooks or lookups resolve
+  if (ctx.orderId && ctx.orderId !== paymentDocId) {
+    await firestore.collection('payments').doc(ctx.orderId).set(paymentPayload, { merge: true });
+  }
 
   if (status === 'paid') {
     // Update the booking status ONLY after a verified, captured payment.
+    // Writes the spec lifecycle statuses (camelCase) used by the shared admin
+    // data layer; payment_status is mirrored for legacy readers. Cloud Functions
+    // use the admin SDK which bypasses Firestore rules (booking updates are
+    // admin-only for clients).
     await firestore.collection('bookings').doc(ctx.bookingId).set(
       {
-        payment_status: 'Paid',
+        status: 'confirmed',
+        paymentStatus: 'paid',
+        payment_status: 'paid',
+        paymentMethod: ctx.method ? `Razorpay (${ctx.method})` : 'Razorpay',
         payment_method: ctx.method ? `Razorpay (${ctx.method})` : 'Razorpay',
         razorpay_order_id: ctx.orderId,
         razorpay_payment_id: ctx.paymentId,
-        status: 'On Going',
+        paymentUpdatedAt: now,
         payment_updated_at: now,
+        updatedAt: now,
+        updated_at: now,
       },
       { merge: true },
     );
@@ -718,7 +760,7 @@ async function fetchRazorpayPayment(
  * AND Razorpay confirms the payment is captured — never on the frontend response
  * alone. Reconciliation is also handled by `razorpayWebhook`.
  */
-export const verifyRazorpayPayment = onRequest(async (req, res) => {
+export const verifyRazorpayPayment = onRequest({ cors: true }, async (req, res) => {
   setRazorpayCorsHeaders(res);
 
   if (req.method === 'OPTIONS') {
@@ -752,12 +794,15 @@ export const verifyRazorpayPayment = onRequest(async (req, res) => {
     return;
   }
 
-  // Idempotency: if a webhook (or a prior call) already reconciled this order,
+  // Idempotency: if a webhook (or a prior call) already reconciled this payment or order,
   // return the existing state instead of re-processing.
-  const existingSnap = await firestore.collection('payments').doc(orderId).get();
-  if (existingSnap.exists) {
-    const existing = existingSnap.data() ?? {};
-    const existingStatus = String(existing.status ?? '');
+  const [payDocSnap, orderDocSnap] = await Promise.all([
+    firestore.collection('payments').doc(paymentId).get(),
+    firestore.collection('payments').doc(orderId).get(),
+  ]);
+  const existingDoc = (payDocSnap.exists ? payDocSnap : orderDocSnap.exists ? orderDocSnap : null)?.data();
+  if (existingDoc) {
+    const existingStatus = String(existingDoc.status ?? '');
     if (existingStatus === 'paid') {
       res.status(200).json({ ok: true, status: 'paid', orderId, paymentId });
       return;
@@ -772,20 +817,26 @@ export const verifyRazorpayPayment = onRequest(async (req, res) => {
 
   if (!signatureValid) {
     const now = isoNow();
-    await firestore.collection('payments').doc(orderId).set(
-      {
-        razorpay_order_id: orderId,
-        razorpay_payment_id: paymentId,
-        booking_id: bookingId,
-        user_id: uid,
-        method: null,
-        status: 'failed',
-        verified: false,
-        verified_at: now,
-        updated_at: now,
-      },
-      { merge: true },
-    );
+    const failPayload = {
+      id: paymentId,
+      bookingId,
+      booking_id: bookingId,
+      userId: uid,
+      user_id: uid,
+      method: null,
+      status: 'failed',
+      createdAt: now,
+      created_at: now,
+      razorpay_order_id: orderId,
+      razorpay_payment_id: paymentId,
+      verified: false,
+      verified_at: now,
+      updated_at: now,
+    };
+    await firestore.collection('payments').doc(paymentId).set(failPayload, { merge: true });
+    if (orderId && orderId !== paymentId) {
+      await firestore.collection('payments').doc(orderId).set(failPayload, { merge: true });
+    }
     logger.warn(`Razorpay signature mismatch for order ${orderId} (payment ${paymentId})`);
     res.status(200).json({ ok: false, status: 'failed', orderId, paymentId });
     return;

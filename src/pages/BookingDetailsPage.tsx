@@ -1,131 +1,286 @@
-import { Ambulance, MapPin, Hospital, Calendar, Clock, Phone, User, Wallet, ArrowLeft, Navigation, Star, MessageSquare } from 'lucide-react';
+import { useState } from 'react';
+import { useAuth } from '@/lib/auth';
+import {
+  useBooking,
+  useAmbulances,
+  useDrivers,
+  markBookingReached,
+  type BookingStatus,
+} from '@/lib/firestoreService';
 import { useApp } from '@/lib/context';
-import { PageHeader } from '@/components/UI';
 import StatusBadge from '@/components/StatusBadge';
-import { formatCurrency, formatDateTime } from '@/lib/utils';
+import { PageHeader } from '@/components/UI';
+import { formatDateTime } from '@/lib/utils';
+import { CreditCard, Calendar, Ambulance, MapPin, CheckCircle2, Loader2, AlertTriangle, Navigation, Phone } from 'lucide-react';
+
+function getBookingId(): string | null {
+  const hash = window.location.hash || '';
+  const match = hash.match(/[?&]id=([^&]+)/);
+  return match?.[1] ?? null;
+}
 
 export default function BookingDetailsPage() {
-  const { bookings, navigate } = useApp();
-  const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
-  const id = params.get('id');
-  const booking = bookings.find((b) => b.id === id);
+  const { user } = useAuth();
+  const { data: booking, loading, error } = useBooking(getBookingId());
+  const { data: ambulances } = useAmbulances();
+  const { data: drivers } = useDrivers();
+  const { navigate } = useApp();
 
-  if (!booking) {
-    return (
-      <div className="max-w-3xl mx-auto px-4 py-16 text-center animate-fade-in">
-        <Ambulance className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-        <h2 className="text-xl font-bold text-gray-900 mb-2">Booking Not Found</h2>
-        <p className="text-gray-500 mb-6">The booking you're looking for doesn't exist.</p>
-        <button onClick={() => navigate('/bookings')} className="btn-primary">Back to My Bookings</button>
-      </div>
-    );
-  }
+  const [reaching, setReaching] = useState(false);
+  const [reachError, setReachError] = useState<string | null>(null);
 
-  const driver = { name: 'Ramesh Yadav', phone: '+91 98111 22222', rating: 4.8, ambulance: 'AMB-001' };
+  const assignedAmbulance = ambulances.find((a) => a.id === booking?.ambulanceId);
+  const assignedDriver = drivers.find((d) => d.id === booking?.driverId);
+
+  const isAcceptedUnpaid = booking?.status === 'accepted' && booking?.paymentStatus !== 'paid';
+  const isConfirmed = booking?.status === 'confirmed';
+  const isAllocated = booking?.status === 'allocated';
+  const isCompleted = booking?.status === 'completed';
+
+  const handleMarkReached = async () => {
+    if (!booking) return;
+    setReaching(true);
+    setReachError(null);
+    try {
+      await markBookingReached(booking.id);
+    } catch (err) {
+      setReachError(err instanceof Error ? err.message : 'Failed to mark as reached.');
+    } finally {
+      setReaching(false);
+    }
+  };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8 animate-fade-in">
-      <button onClick={() => navigate('/bookings')} className="btn-ghost mb-4">
-        <ArrowLeft className="w-4 h-4" /> Back to Bookings
-      </button>
-      <PageHeader title={booking.bookingCode} subtitle={`Booked on ${formatDateTime(booking.createdAt)}`} icon={<Ambulance className="w-5 h-5" />} />
+    <div className="max-w-3xl mx-auto px-4 py-8 animate-fade-in">
+      <PageHeader
+        title="Booking Details"
+        subtitle={
+          isCompleted
+            ? 'Trip completed — thank you for using LifeCare.'
+            : isAllocated
+            ? 'Ambulance is allocated and on the way.'
+            : isConfirmed
+            ? 'Your booking is confirmed — ambulance allocation in progress.'
+            : isAcceptedUnpaid
+            ? 'Accepted — please complete your payment to confirm.'
+            : booking
+            ? 'View and manage your booking.'
+            : 'Booking details'
+        }
+        icon={<Ambulance className="w-5 h-5" />}
+      />
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          <div className="card p-6">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-bold text-lg text-gray-900">Trip Details</h3>
+      {loading && (
+        <div className="flex flex-col items-center justify-center py-16">
+          <div className="w-8 h-8 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin" />
+          <p className="text-gray-500 mt-3">Loading booking…</p>
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="text-center py-12">
+          <p className="text-red-600">{error.message}</p>
+          <button onClick={() => navigate('/bookings')} className="btn-primary mt-4 text-sm">
+            Back to My Bookings
+          </button>
+        </div>
+      )}
+
+      {!loading && !error && !booking && (
+        <div className="text-center py-12">
+          <p className="text-gray-500">Booking not found or no longer available.</p>
+          <button onClick={() => navigate('/bookings')} className="btn-primary mt-4 text-sm">
+            Back to My Bookings
+          </button>
+        </div>
+      )}
+
+      {booking && (
+        <div className="card p-6 mt-6">
+          <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
+            <div className="flex flex-wrap items-center gap-3">
               <StatusBadge status={booking.status} />
+              {isConfirmed && (
+                <span className="text-sm font-semibold text-green-700 bg-green-50 px-3 py-1 rounded-full">
+                  Confirmed
+                </span>
+              )}
+              {isAcceptedUnpaid && (
+                <span className="text-sm font-semibold text-blue-700 bg-blue-50 px-3 py-1 rounded-full">
+                  Accepted — please complete payment
+                </span>
+              )}
+              {isAllocated && (
+                <span className="text-sm font-semibold text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200">
+                  Ambulance Allocated
+                </span>
+              )}
+              {isCompleted && (
+                <span className="text-sm font-semibold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+                  Trip Completed
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-gray-500">{booking.bookingCode ?? 'No code'}</div>
+          </div>
+
+          {reachError && (
+            <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
+              <span>{reachError}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Pickup</p>
+                <p className="font-semibold text-gray-900">{booking.pickup}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Destination</p>
+                <p className="font-semibold text-gray-900">{booking.destination}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Priority</p>
+                <p className="font-semibold text-gray-900">
+                  {booking.priority.charAt(0).toUpperCase() + booking.priority.slice(1)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Scheduled</p>
+                <p className="font-semibold text-gray-900">{formatDateTime(booking.scheduledTime)}</p>
+              </div>
+              {(booking.distanceText || booking.durationText) && (
+                <div>
+                  <p className="text-xs text-gray-500 mb-1">Distance / ETA</p>
+                  <p className="font-semibold text-gray-900">{booking.distanceText ?? '—'} · {booking.durationText ?? '—'}</p>
+                </div>
+              )}
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                <Calendar className="w-4 h-4" />
+                <span>{formatDateTime(booking.createdAt)}</span>
+              </div>
             </div>
             <div className="space-y-4">
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-full bg-brand-50 flex items-center justify-center shrink-0"><MapPin className="w-5 h-5 text-brand-600" /></div>
-                <div><p className="text-xs text-gray-500 font-semibold uppercase">Pickup</p><p className="text-sm font-semibold text-gray-900">{booking.pickup}</p></div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Status</p>
+                <p className="font-semibold text-gray-900">{booking.status}</p>
               </div>
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center shrink-0"><Hospital className="w-5 h-5 text-green-600" /></div>
-                <div><p className="text-xs text-gray-500 font-semibold uppercase">Destination</p><p className="text-sm font-semibold text-gray-900">{booking.destination}</p></div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Payment Status</p>
+                <p className="font-semibold text-gray-900">{booking.paymentStatus}</p>
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4 mt-5 pt-5 border-t border-gray-100">
-              <div className="flex items-center gap-2"><Calendar className="w-4 h-4 text-gray-400" /><div><p className="text-xs text-gray-500">Date</p><p className="text-sm font-semibold text-gray-900">{formatDateTime(booking.scheduledFor).split(',')[0]}</p></div></div>
-              <div className="flex items-center gap-2"><Clock className="w-4 h-4 text-gray-400" /><div><p className="text-xs text-gray-500">Time</p><p className="text-sm font-semibold text-gray-900">{formatDateTime(booking.scheduledFor).split(',')[1]}</p></div></div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">User</p>
+                <p className="font-semibold text-gray-900">{booking.userId}</p>
+              </div>
+              {booking.ambulanceId && (
+                <div className="flex items-center gap-2 text-xs text-gray-700">
+                  <Ambulance className="w-4 h-4 text-teal-600" />
+                  <span>
+                    Ambulance:{' '}
+                    <strong className="text-gray-900">
+                      {assignedAmbulance ? `${assignedAmbulance.number} (${assignedAmbulance.type})` : booking.ambulanceId}
+                    </strong>
+                  </span>
+                </div>
+              )}
+              {booking.driverId && (
+                <div className="flex items-center justify-between text-xs text-gray-700 bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-brand-100 text-brand-700 font-extrabold flex items-center justify-center text-xs shrink-0">
+                      {assignedDriver?.name ? assignedDriver.name.charAt(0).toUpperCase() : <MapPin className="w-4 h-4" />}
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900">
+                        {assignedDriver ? assignedDriver.name : `Driver ID: ${booking.driverId.slice(0, 8)}`}
+                      </p>
+                      {assignedDriver?.phone && (
+                        <p className="text-[11px] text-gray-500">{assignedDriver.phone}</p>
+                      )}
+                    </div>
+                  </div>
+                  {assignedDriver?.phone && (
+                    <a
+                      href={`tel:${assignedDriver.phone.replace(/\s/g, '')}`}
+                      className="px-2.5 py-1 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 font-semibold text-xs flex items-center gap-1 transition-colors"
+                    >
+                      <Phone className="w-3 h-3" /> Call
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
-          {booking.status === 'On Going' && (
-            <div className="card p-6">
-              <h3 className="font-bold text-lg text-gray-900 mb-4">Live Tracking</h3>
-              <div className="bg-gray-100 rounded-xl h-48 flex items-center justify-center relative overflow-hidden">
-                <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'linear-gradient(#E63946 1px, transparent 1px), linear-gradient(90deg, #E63946 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
-                <div className="relative text-center">
-                  <div className="w-16 h-16 rounded-full bg-brand-500 flex items-center justify-center mx-auto mb-2 animate-pulse-soft">
-                    <Ambulance className="w-8 h-8 text-white" />
+          {isAcceptedUnpaid && (
+            <div className="mt-8 text-right">
+              <button
+                onClick={() => navigate(`/payment?id=${booking.id}`)}
+                className="btn-primary inline-flex items-center gap-2"
+              >
+                <CreditCard className="w-4 h-4" /> Pay Now
+              </button>
+            </div>
+          )}
+
+          {isAllocated && (
+            <div className="mt-8 p-5 rounded-2xl bg-teal-50 border border-teal-200">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0">
+                    <Ambulance className="w-5 h-5" />
                   </div>
-                  <p className="text-sm font-semibold text-gray-700">Ambulance en route</p>
-                  <p className="text-xs text-gray-500">ETA: 8 minutes</p>
+                  <div>
+                    <h4 className="font-bold text-gray-900 text-sm">Ambulance & Driver Allocated</h4>
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      {assignedAmbulance ? `Vehicle ${assignedAmbulance.number} (${assignedAmbulance.type})` : 'Your ambulance'}
+                      {assignedDriver ? ` with driver ${assignedDriver.name} (${assignedDriver.phone})` : ''} is on the way. Once you have reached the destination, click below to complete the trip.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    onClick={() => navigate(`/track?id=${booking.id}`)}
+                    className="btn-ghost text-xs py-2.5 px-3.5 border border-teal-300 text-teal-800 bg-white hover:bg-teal-100 flex items-center gap-1.5"
+                  >
+                    <Navigation className="w-3.5 h-3.5" /> Track Live
+                  </button>
+                  <button
+                    onClick={handleMarkReached}
+                    disabled={reaching}
+                    className="btn-primary text-xs py-2.5 px-4 bg-teal-600 hover:bg-teal-700 border-teal-600 text-white inline-flex items-center gap-1.5 shadow-sm"
+                  >
+                    {reaching ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Updating…
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Mark as Reached
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
-              <button onClick={() => navigate('/track')} className="btn-primary w-full mt-4">
-                <Navigation className="w-4 h-4" /> Open Live Tracking
-              </button>
             </div>
           )}
 
-          {booking.status === 'Completed' && (
-            <div className="card p-6">
-              <h3 className="font-bold text-lg text-gray-900 mb-4">Share Your Feedback</h3>
-              <div className="flex items-center gap-1 mb-4">
-                {[1,2,3,4,5].map((i) => <Star key={i} className="w-8 h-8 text-amber-400 fill-current cursor-pointer hover:scale-110 transition-transform" />)}
-              </div>
-              <textarea rows={3} className="input-field resize-none mb-3" placeholder="Tell us about your experience..." />
-              <button onClick={() => navigate('/feedback')} className="btn-primary">
-                <MessageSquare className="w-4 h-4" /> Submit Feedback
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-6">
-          <div className="card p-6">
-            <h3 className="font-bold text-gray-900 mb-4">Patient Info</h3>
-            <div className="space-y-3 text-sm">
-              <div className="flex items-center gap-2"><User className="w-4 h-4 text-gray-400" /><span className="text-gray-600">{booking.patientName}</span></div>
-              <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-gray-400" /><span className="text-gray-600">{booking.phone}</span></div>
-              <div className="flex items-center gap-2"><Ambulance className="w-4 h-4 text-gray-400" /><span className="text-gray-600">{booking.ambulanceType} Ambulance</span></div>
-              <div className="flex items-center gap-2"><Star className="w-4 h-4 text-gray-400" /><span className="text-gray-600">{booking.emergencyLevel} Emergency</span></div>
-            </div>
-          </div>
-
-          <div className="card p-6">
-            <h3 className="font-bold text-gray-900 mb-4">Driver Details</h3>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold">{driver.name.charAt(0)}</div>
+          {isCompleted && (
+            <div className="mt-8 p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center gap-3 text-emerald-800 text-xs">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
               <div>
-                <p className="font-semibold text-gray-900 text-sm">{driver.name}</p>
-                <div className="flex items-center gap-1 text-xs text-gray-500"><Star className="w-3 h-3 text-amber-400 fill-current" /> {driver.rating} - {driver.ambulance}</div>
+                <p className="font-bold">Trip Successfully Completed</p>
+                <p className="text-emerald-700">Thank you for choosing LifeCare Ambulance Service.</p>
               </div>
             </div>
-            <a href={`tel:${driver.phone.replace(/\s/g,'')}`} className="btn-secondary w-full text-sm">
-              <Phone className="w-4 h-4" /> Call Driver
-            </a>
-          </div>
-
-          <div className="card p-6">
-            <h3 className="font-bold text-gray-900 mb-4">Payment Summary</h3>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-gray-500">Ambulance Fee</span><span className="font-semibold text-gray-900">{formatCurrency(booking.amount)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-500">Method</span><span className="font-semibold text-gray-900">{booking.paymentMethod}</span></div>
-              <div className="border-t border-gray-100 pt-2 flex justify-between"><span className="font-bold text-gray-700">Total</span><span className="font-extrabold text-brand-600 text-lg">{formatCurrency(booking.amount)}</span></div>
-            </div>
-            {booking.status === 'Completed' && booking.paymentMethod !== 'Cash on service' && (
-              <button onClick={() => navigate('/payment')} className="btn-secondary w-full mt-4 text-sm">
-                <Wallet className="w-4 h-4" /> View Payment
-              </button>
-            )}
-          </div>
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
