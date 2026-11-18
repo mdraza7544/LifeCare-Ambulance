@@ -1,172 +1,210 @@
-import { Calendar, Users, Ambulance, Wallet, MoreVertical, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import {
+  Calendar,
+  Users,
+  Ambulance,
+  Wallet,
+  MoreVertical,
+  ArrowUpRight,
+  UserCheck,
+  Clock,
+  Layers,
+} from 'lucide-react';
 import { useApp } from '@/lib/context';
-import { useUsers, useAmbulances, useBookings } from '@/lib/firestoreService';
+import {
+  useBookings,
+  useAmbulances,
+  useDrivers,
+  useUsers,
+  usePayments,
+} from '@/lib/firestoreService';
+import { getAdminStats, getAdminChartData } from '@/lib/dashboardStats';
 import AdminLayout from '@/components/AdminLayout';
 import StatusBadge from '@/components/StatusBadge';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
-import { useState, useMemo } from 'react';
+
+function AdminStatSkeleton() {
+  return (
+    <div className="card p-5 animate-pulse">
+      <div className="flex items-start justify-between mb-3">
+        <div className="w-11 h-11 rounded-xl bg-gray-200" />
+        <div className="w-12 h-4 bg-gray-200 rounded" />
+      </div>
+      <div className="h-4 w-24 bg-gray-200 rounded mb-2" />
+      <div className="h-7 w-20 bg-gray-200 rounded mb-2" />
+      <div className="h-3 w-32 bg-gray-100 rounded" />
+    </div>
+  );
+}
 
 export default function AdminDashboard() {
   const { navigate } = useApp();
-  const { data: users } = useUsers();
-  const { data: ambulances } = useAmbulances();
-  const { data: bookings } = useBookings();
+  const { data: bookings, loading: bookingsLoading } = useBookings();
+  const { data: ambulances, loading: ambulancesLoading } = useAmbulances();
+  const { data: drivers, loading: driversLoading } = useDrivers();
+  const { data: users, loading: usersLoading } = useUsers();
+  const { data: payments, loading: paymentsLoading } = usePayments();
+
   const [chartPeriod, setChartPeriod] = useState<'Week' | 'Month' | 'Year'>('Week');
 
-  // Compute real revenue from completed or paid bookings
-  const totalRevenue = useMemo(() => {
-    return bookings
-      .filter(
-        (b) =>
-          b.status === 'completed' ||
-          b.paymentStatus === 'paid' ||
-          String(b.status).toLowerCase() === 'completed'
-      )
-      .reduce((s, b) => s + (Number(b.amount) || 0), 0);
-  }, [bookings]);
+  const isLoading =
+    bookingsLoading || ambulancesLoading || driversLoading || usersLoading || paymentsLoading;
+
+  // Single shared stats calculation via pure helper
+  const stats = useMemo(
+    () => getAdminStats({ bookings, ambulances, drivers, users, payments }),
+    [bookings, ambulances, drivers, users, payments],
+  );
 
   // Dynamic booking overview chart data from real Firestore bookings
-  const chartLabels = useMemo(() => {
-    if (chartPeriod === 'Week') {
-      return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    }
-    if (chartPeriod === 'Month') {
-      return ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8', 'W9', 'W10', 'W11', 'W12'];
-    }
-    return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  }, [chartPeriod]);
-
-  const chartData = useMemo(() => {
-    const counts = new Array(chartLabels.length).fill(0);
-    const now = new Date();
-    const currentYear = now.getFullYear();
-
-    bookings.forEach((b) => {
-      const d = new Date(b.createdAt || b.scheduledTime);
-      if (isNaN(d.getTime())) return;
-
-      if (chartPeriod === 'Week') {
-        // Group by day of week (Mon = 0, Sun = 6)
-        const dayIdx = (d.getDay() + 6) % 7;
-        counts[dayIdx] += 1;
-      } else if (chartPeriod === 'Month') {
-        if (d.getFullYear() === currentYear) {
-          const monthIdx = d.getMonth();
-          if (monthIdx < counts.length) counts[monthIdx] += 1;
-        }
-      } else {
-        // Year: group by month of current year
-        if (d.getFullYear() === currentYear) {
-          const monthIdx = d.getMonth();
-          counts[monthIdx] += 1;
-        }
-      }
-    });
-
-    return counts;
-  }, [bookings, chartPeriod, chartLabels.length]);
+  const { labels: chartLabels, data: chartData } = useMemo(
+    () => getAdminChartData(bookings, chartPeriod),
+    [bookings, chartPeriod],
+  );
 
   const maxVal = Math.max(...chartData, 1);
 
-  // Booking Status breakdown from real bookings
+  // Status breakdown list with live counts
   const statusBreakdown = useMemo(() => {
-    const normalize = (status: string) => status.toLowerCase();
     return [
+      { label: 'Pending', value: stats.pending, color: 'bg-amber-400' },
+      { label: 'Accepted (Unpaid)', value: stats.accepted, color: 'bg-yellow-500' },
+      { label: 'Confirmed (Paid)', value: stats.confirmed, color: 'bg-emerald-500' },
+      { label: 'Allocated (En Route)', value: stats.allocated, color: 'bg-blue-500' },
+      { label: 'Completed', value: stats.completed, color: 'bg-green-600' },
+      { label: 'In Queue', value: stats.queueLength, color: 'bg-purple-500' },
       {
-        label: 'Completed',
-        value: bookings.filter((b) => normalize(b.status) === 'completed').length,
-        color: 'bg-green-500',
-      },
-      {
-        label: 'On Going / Allocated',
-        value: bookings.filter(
-          (b) => normalize(b.status) === 'allocated' || normalize(b.status) === 'on going'
-        ).length,
-        color: 'bg-blue-500',
-      },
-      {
-        label: 'Accepted / Confirmed',
-        value: bookings.filter(
-          (b) =>
-            normalize(b.status) === 'accepted' ||
-            normalize(b.status) === 'confirmed' ||
-            normalize(b.status) === 'scheduled'
-        ).length,
-        color: 'bg-amber-500',
-      },
-      {
-        label: 'Cancelled / Rejected',
-        value: bookings.filter(
-          (b) => normalize(b.status) === 'cancelled' || normalize(b.status) === 'rejected'
-        ).length,
-        color: 'bg-brand-500',
+        label: 'Cancelled / Rejected / Expired',
+        value: stats.cancelled + stats.rejected + stats.expired,
+        color: 'bg-rose-500',
       },
     ];
-  }, [bookings]);
+  }, [stats]);
 
   return (
     <AdminLayout title="Dashboard">
-      {/* Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div className="card p-5">
-          <div className="flex items-start justify-between mb-3">
-            <div className="w-11 h-11 rounded-xl bg-brand-50 flex items-center justify-center text-brand-600">
-              <Calendar className="w-5 h-5" />
+      {/* 5 Real-Time Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        {isLoading ? (
+          <>
+            <AdminStatSkeleton />
+            <AdminStatSkeleton />
+            <AdminStatSkeleton />
+            <AdminStatSkeleton />
+            <AdminStatSkeleton />
+          </>
+        ) : (
+          <>
+            {/* Total Bookings */}
+            <div className="card p-5">
+              <div className="flex items-start justify-between mb-2">
+                <div className="w-10 h-10 rounded-xl bg-brand-50 flex items-center justify-center text-brand-600">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <span className="text-[11px] font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                  <ArrowUpRight className="w-3 h-3" /> Live
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 font-medium">Total Bookings</p>
+              <p className="text-2xl font-extrabold text-gray-900 mt-0.5">{stats.totalBookings}</p>
+              <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
+                <span>Pending: <b className="text-amber-600">{stats.pending}</b></span>
+                <span>Active: <b className="text-blue-600">{stats.allocated}</b></span>
+                <span>Done: <b className="text-green-600">{stats.completed}</b></span>
+              </div>
             </div>
-            <span className="text-xs font-semibold text-green-600 flex items-center gap-0.5">
-              <ArrowUpRight className="w-3 h-3" /> Live
-            </span>
-          </div>
-          <p className="text-sm text-gray-500 font-medium">Total Bookings</p>
-          <p className="text-2xl font-extrabold text-gray-900 mt-0.5">{bookings.length}</p>
-        </div>
-        <div className="card p-5">
-          <div className="flex items-start justify-between mb-3">
-            <div className="w-11 h-11 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600">
-              <Users className="w-5 h-5" />
+
+            {/* Total Revenue (from Payments collection) */}
+            <div className="card p-5">
+              <div className="flex items-start justify-between mb-2">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
+                  <Wallet className="w-5 h-5" />
+                </div>
+                <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                  <ArrowUpRight className="w-3 h-3" /> Paid
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 font-medium">Total Revenue</p>
+              <p className="text-2xl font-extrabold text-gray-900 mt-0.5 truncate">
+                {formatCurrency(stats.earnings.total)}
+              </p>
+              <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
+                <span>Today: <b className="text-gray-900">{formatCurrency(stats.earnings.today)}</b></span>
+                <span>Month: <b className="text-gray-900">{formatCurrency(stats.earnings.thisMonth)}</b></span>
+              </div>
             </div>
-            <span className="text-xs font-semibold text-green-600 flex items-center gap-0.5">
-              <ArrowUpRight className="w-3 h-3" /> Live
-            </span>
-          </div>
-          <p className="text-sm text-gray-500 font-medium">Total Users</p>
-          <p className="text-2xl font-extrabold text-gray-900 mt-0.5">{users.length}</p>
-        </div>
-        <div className="card p-5">
-          <div className="flex items-start justify-between mb-3">
-            <div className="w-11 h-11 rounded-xl bg-green-50 flex items-center justify-center text-green-600">
-              <Ambulance className="w-5 h-5" />
+
+            {/* Ambulances */}
+            <div className="card p-5">
+              <div className="flex items-start justify-between mb-2">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
+                  <Ambulance className="w-5 h-5" />
+                </div>
+                <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                  Fleet
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 font-medium">Ambulances</p>
+              <p className="text-2xl font-extrabold text-gray-900 mt-0.5">{stats.ambulances.total}</p>
+              <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
+                <span title="Available"><b className="text-emerald-600">{stats.ambulances.available}</b> Free</span>
+                <span title="Booked"><b className="text-blue-600">{stats.ambulances.booked}</b> Busy</span>
+                <span title="Maintenance"><b className="text-gray-500">{stats.ambulances.maintenance}</b> Maint</span>
+              </div>
             </div>
-            <span className="text-xs font-semibold text-brand-600 flex items-center gap-0.5">
-              <ArrowDownRight className="w-3 h-3" /> Fleet
-            </span>
-          </div>
-          <p className="text-sm text-gray-500 font-medium">Total Ambulances</p>
-          <p className="text-2xl font-extrabold text-gray-900 mt-0.5">{ambulances.length}</p>
-        </div>
-        <div className="card p-5">
-          <div className="flex items-start justify-between mb-3">
-            <div className="w-11 h-11 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
-              <Wallet className="w-5 h-5" />
+
+            {/* Drivers */}
+            <div className="card p-5">
+              <div className="flex items-start justify-between mb-2">
+                <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600">
+                  <UserCheck className="w-5 h-5" />
+                </div>
+                <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full">
+                  Staff
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 font-medium">Drivers</p>
+              <p className="text-2xl font-extrabold text-gray-900 mt-0.5">{stats.drivers.total}</p>
+              <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
+                <span title="Available"><b className="text-emerald-600">{stats.drivers.available}</b> Free</span>
+                <span title="Allocated"><b className="text-blue-600">{stats.drivers.allocated}</b> On duty</span>
+                <span title="Off duty"><b className="text-gray-500">{stats.drivers.offDuty}</b> Off</span>
+              </div>
             </div>
-            <span className="text-xs font-semibold text-green-600 flex items-center gap-0.5">
-              <ArrowUpRight className="w-3 h-3" /> Earned
-            </span>
-          </div>
-          <p className="text-sm text-gray-500 font-medium">Total Revenue</p>
-          <p className="text-2xl font-extrabold text-gray-900 mt-0.5">
-            {formatCurrency(totalRevenue)}
-          </p>
-        </div>
+
+            {/* Users */}
+            <div className="card p-5">
+              <div className="flex items-start justify-between mb-2">
+                <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600">
+                  <Users className="w-5 h-5" />
+                </div>
+                <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
+                  Clients
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 font-medium">Total Users</p>
+              <p className="text-2xl font-extrabold text-gray-900 mt-0.5">{stats.totalUsers}</p>
+              <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
+                <span>New Today: <b className="text-blue-600">+{stats.newUsersToday}</b></span>
+                {stats.queueLength > 0 && (
+                  <span className="text-purple-600 font-bold flex items-center gap-0.5">
+                    <Clock className="w-3 h-3" /> Q: {stats.queueLength}
+                  </span>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Charts */}
+      {/* Charts & Status Breakdown */}
       <div className="grid lg:grid-cols-3 gap-6 mb-6">
+        {/* Booking Overview Chart */}
         <div className="lg:col-span-2 card p-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
             <div>
               <h3 className="font-bold text-gray-900">Booking Overview</h3>
-              <p className="text-xs text-gray-500 mt-0.5">Real-time ambulance booking requests</p>
+              <p className="text-xs text-gray-500 mt-0.5">Real-time ambulance booking requests (Asia/Kolkata)</p>
             </div>
             <div className="flex bg-gray-100 rounded-lg p-0.5">
               {(['Week', 'Month', 'Year'] as const).map((period) => (
@@ -184,6 +222,7 @@ export default function AdminDashboard() {
               ))}
             </div>
           </div>
+
           <div className="flex items-end justify-between gap-2 h-52 pt-6">
             {chartData.map((val, i) => (
               <div key={i} className="flex-1 flex flex-col items-center gap-2">
@@ -203,33 +242,40 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Status Breakdown */}
+        {/* Status Breakdown Card */}
         <div className="card p-6">
-          <h3 className="font-bold text-gray-900 mb-1">Status Breakdown</h3>
-          <p className="text-xs text-gray-500 mb-6">Distribution of booking statuses</p>
-          <div className="flex items-center justify-center my-4">
-            <div className="relative w-36 h-36 rounded-full border-8 border-gray-100 flex items-center justify-center">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="font-bold text-gray-900">Status Breakdown</h3>
+            <span className="text-xs text-gray-500 font-medium flex items-center gap-1">
+              <Layers className="w-3.5 h-3.5" /> All Bookings
+            </span>
+          </div>
+          <p className="text-xs text-gray-500 mb-4">Live distribution of all dispatch states</p>
+
+          <div className="flex items-center justify-center my-3">
+            <div className="relative w-32 h-32 rounded-full border-8 border-gray-100 flex items-center justify-center bg-gray-50/50">
               <div className="text-center">
-                <span className="text-2xl font-extrabold text-gray-900">{bookings.length}</span>
+                <span className="text-2xl font-extrabold text-gray-900">{stats.totalBookings}</span>
                 <span className="text-[11px] text-gray-500 block">Total</span>
               </div>
             </div>
           </div>
+
           <div className="space-y-2 mt-4">
             {statusBreakdown.map((s, i) => (
-              <div key={i} className="flex items-center justify-between text-sm">
+              <div key={i} className="flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2">
-                  <span className={`w-2.5 h-2.5 rounded-full ${s.color}`} />
-                  <span className="text-gray-600 text-xs">{s.label}</span>
+                  <span className={`w-2 h-2 rounded-full ${s.color}`} />
+                  <span className="text-gray-600">{s.label}</span>
                 </div>
-                <span className="font-semibold text-gray-900 text-xs">{s.value}</span>
+                <span className="font-semibold text-gray-900">{s.value}</span>
               </div>
             ))}
           </div>
         </div>
       </div>
 
-      {/* Recent Bookings */}
+      {/* Recent Bookings Table (Directly from live data) */}
       <div className="card p-6">
         <div className="flex items-center justify-between mb-5">
           <div>
@@ -240,9 +286,10 @@ export default function AdminDashboard() {
             onClick={() => navigate('/admin/bookings')}
             className="text-sm font-semibold text-brand-600 hover:underline"
           >
-            View All
+            View All ({stats.totalBookings})
           </button>
         </div>
+
         <div className="overflow-x-auto -mx-6 px-6">
           <table className="w-full min-w-[800px]">
             <thead>
@@ -265,7 +312,7 @@ export default function AdminDashboard() {
                   </td>
                 </tr>
               ) : (
-                bookings.slice(0, 6).map((b) => (
+                bookings.slice(0, 8).map((b) => (
                   <tr
                     key={b.id}
                     className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors"

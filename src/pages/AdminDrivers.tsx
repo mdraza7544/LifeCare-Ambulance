@@ -5,7 +5,6 @@ import {
   Search,
   Filter,
   Phone,
-  CreditCard,
   Edit2,
   Trash2,
   Loader2,
@@ -26,6 +25,7 @@ import {
   type Driver,
   type DriverStatus,
 } from '@/lib/firestoreService';
+import { processQueue } from '@/lib/dispatchService';
 import { useApp } from '@/lib/context';
 
 type StatusFilter = 'All' | DriverStatus;
@@ -121,6 +121,7 @@ export default function AdminDrivers() {
         license: form.license.trim().toUpperCase(),
         status: form.status,
       });
+      processQueue().catch((qErr) => console.warn('[AdminDrivers] processQueue warning:', qErr));
       setShowAddModal(false);
       setForm(DEFAULT_FORM);
     } catch (err) {
@@ -147,6 +148,7 @@ export default function AdminDrivers() {
         status: form.status,
         ...(form.status === 'available' ? { currentBookingId: null } : {}),
       });
+      processQueue().catch((qErr) => console.warn('[AdminDrivers] processQueue warning:', qErr));
       setEditingDriver(null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to update driver.');

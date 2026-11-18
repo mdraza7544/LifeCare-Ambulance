@@ -10,6 +10,7 @@ export default function StatusBadge({ status }: { status: string }) {
         status === 'paid' ? 'bg-indigo-500' :
         status === 'allocated' ? 'bg-teal-500' :
         status === 'completed' ? 'bg-emerald-500' :
+        status === 'expired' ? 'bg-gray-400' :
         status === 'rejected' || status === 'cancelled' ? 'bg-red-500' :
         'bg-gray-500'
       }`} />

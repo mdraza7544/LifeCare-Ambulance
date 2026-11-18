@@ -1,4 +1,11 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from './firebase';
+import {
+  COLLECTIONS,
+  updateNotification,
+  markAllNotificationsRead as fsMarkAllNotificationsRead,
+} from './firestoreService';
 import type { Booking, NotificationItem, Address, UserProfile } from './types';
 import {
   fetchBookings,
@@ -10,9 +17,6 @@ import {
   saveAddresses,
   fetchAddresses,
   createNotification,
-  fetchNotifications,
-  markNotificationRead as dbMarkNotificationRead,
-  markAllNotificationsRead as dbMarkAllNotificationsRead,
 } from './db';
 import { useAuth } from './auth';
 
@@ -68,42 +72,103 @@ export function AppProvider({ children }: { children: ReactNode }) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [route]);
 
-  // Load bookings from Firestore.
+  // Real-time onSnapshot listener for bookings in app context
   useEffect(() => {
-    let active = true;
     if (!user) {
       setBookings([]);
       return;
     }
     const isAdmin = user.user_metadata?.role === 'admin';
-    (async () => {
-      try {
-        const rows = isAdmin
-          ? await fetchAllBookings()
-          : await fetchBookings(user.id);
-        if (active) setBookings(rows);
-      } catch (err) {
-        console.error('[firestore] fetchBookings failed.', err);
-        if (active) setBookings([]);
-      }
-    })();
-    return () => { active = false; };
+    const ref = collection(db, COLLECTIONS.bookings);
+    const q = isAdmin
+      ? query(ref)
+      : query(ref, where('userId', '==', user.id));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snap) => {
+        const rows: Booking[] = snap.docs.map((d) => {
+          const r = d.data();
+          return {
+            id: d.id,
+            bookingCode: String(r.bookingCode ?? r.booking_code ?? ''),
+            patientName: String(r.patientName ?? r.patient_name ?? ''),
+            phone: String(r.phone ?? ''),
+            pickup: String(r.pickup ?? ''),
+            destination: String(r.destination ?? ''),
+            pickupLat: typeof r.pickupLat === 'number' ? r.pickupLat : (typeof r.pickup_lat === 'number' ? r.pickup_lat : undefined),
+            pickupLng: typeof r.pickupLng === 'number' ? r.pickupLng : (typeof r.pickup_lng === 'number' ? r.pickup_lng : undefined),
+            destinationLat: typeof r.destinationLat === 'number' ? r.destinationLat : (typeof r.destination_lat === 'number' ? r.destination_lat : undefined),
+            destinationLng: typeof r.destinationLng === 'number' ? r.destinationLng : (typeof r.destination_lng === 'number' ? r.destination_lng : undefined),
+            ambulanceType: r.ambulanceType ?? r.ambulance_type ?? 'Basic',
+            emergencyLevel: r.emergencyLevel ?? r.emergency_level ?? 'Normal',
+            scheduledFor: String(r.scheduledTime ?? r.scheduled_for ?? ''),
+            bookingType: r.bookingType ?? r.booking_type ?? 'now',
+            status: r.status ?? 'pending',
+            amount: Number(r.amount ?? 0),
+            paymentMethod: String(r.paymentMethod ?? r.payment_method ?? 'Online'),
+            createdAt: String(r.createdAt ?? r.created_at ?? new Date().toISOString()),
+            assignedDriverUid: r.driverId ? String(r.driverId) : (r.assigned_driver_uid ? String(r.assigned_driver_uid) : undefined),
+            assignedDriverName: r.assignedDriverName ? String(r.assignedDriverName) : (r.assigned_driver_name ? String(r.assigned_driver_name) : undefined),
+          } as Booking;
+        });
+        rows.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setBookings(rows);
+      },
+      (err) => {
+        console.error('[context] Real-time bookings onSnapshot error:', err);
+      },
+    );
+    return () => unsubscribe();
   }, [user]);
 
-  // Load notifications (last 15 days) from Firestore.
+  // Single real-time onSnapshot listener for notifications
   useEffect(() => {
-    let active = true;
-    (async () => {
-      if (!user) { if (active) setNotifications([]); return; }
-      try {
-        const rows = await fetchNotifications(user.id);
-        if (active) setNotifications(rows);
-      } catch (err) {
-        console.error('[firestore] fetchNotifications failed.', err);
-        if (active) setNotifications([]);
-      }
-    })();
-    return () => { active = false; };
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
+
+    const ref = collection(db, COLLECTIONS.notifications);
+    const isAdmin = user.user_metadata?.role === 'admin';
+    const q = isAdmin
+      ? query(ref)
+      : query(ref, where('userId', '==', user.id));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const rows: NotificationItem[] = snapshot.docs.map((d) => {
+          const r = d.data();
+          let timeStr = 'Just now';
+          if (r.createdAt && typeof r.createdAt.toDate === 'function') {
+            timeStr = r.createdAt.toDate().toISOString();
+          } else if (r.createdAt) {
+            timeStr = String(r.createdAt);
+          } else if (r.created_at) {
+            timeStr = String(r.created_at);
+          }
+
+          return {
+            id: d.id,
+            title: String(r.title ?? ''),
+            message: String(r.message ?? ''),
+            time: timeStr,
+            read: Boolean(r.read),
+            type: (String(r.type ?? 'system') as NotificationItem['type']),
+            bookingId: r.bookingId ? String(r.bookingId) : (r.booking_id ? String(r.booking_id) : undefined),
+          };
+        });
+
+        rows.sort((a, b) => new Date(b.time || 0).getTime() - new Date(a.time || 0).getTime());
+        setNotifications(rows);
+      },
+      (err) => {
+        console.error('[context] Real-time notifications onSnapshot error:', err);
+      },
+    );
+
+    return () => unsubscribe();
   }, [user]);
 
   // Hydrate the signed-in user's profile from Firestore.
@@ -184,13 +249,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const markNotificationRead = (id: string) => {
+    // Optimistic local state update
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
-    dbMarkNotificationRead(id).catch(() => undefined);
+    updateNotification(id, { read: true }).catch((err) => {
+      console.error('[context] markNotificationRead write failed:', err);
+      // Revert if failed
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: false } : n)));
+    });
   };
 
   const markAllNotificationsRead = () => {
+    // Optimistic local state update
+    const previous = [...notifications];
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    if (user) dbMarkAllNotificationsRead(user.id).catch(() => undefined);
+    if (user) {
+      fsMarkAllNotificationsRead(user.id).catch((err) => {
+        console.error('[context] markAllNotificationsRead write failed:', err);
+        setNotifications(previous);
+      });
+    }
   };
 
   const addAddress = (a: Address) => {

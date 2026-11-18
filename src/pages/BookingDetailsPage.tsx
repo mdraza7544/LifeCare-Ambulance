@@ -1,17 +1,17 @@
 import { useState } from 'react';
-import { useAuth } from '@/lib/auth';
 import {
   useBooking,
+  useBookings,
   useAmbulances,
   useDrivers,
   markBookingReached,
-  type BookingStatus,
 } from '@/lib/firestoreService';
+import { processQueue, getQueuePosition } from '@/lib/dispatchService';
 import { useApp } from '@/lib/context';
 import StatusBadge from '@/components/StatusBadge';
 import { PageHeader } from '@/components/UI';
 import { formatDateTime } from '@/lib/utils';
-import { CreditCard, Calendar, Ambulance, MapPin, CheckCircle2, Loader2, AlertTriangle, Navigation, Phone } from 'lucide-react';
+import { CreditCard, Calendar, Ambulance, MapPin, CheckCircle2, Loader2, AlertTriangle, Navigation, Phone, Clock } from 'lucide-react';
 
 function getBookingId(): string | null {
   const hash = window.location.hash || '';
@@ -20,8 +20,8 @@ function getBookingId(): string | null {
 }
 
 export default function BookingDetailsPage() {
-  const { user } = useAuth();
   const { data: booking, loading, error } = useBooking(getBookingId());
+  const { data: allBookings } = useBookings();
   const { data: ambulances } = useAmbulances();
   const { data: drivers } = useDrivers();
   const { navigate } = useApp();
@@ -37,12 +37,23 @@ export default function BookingDetailsPage() {
   const isAllocated = booking?.status === 'allocated';
   const isCompleted = booking?.status === 'completed';
 
+  const acceptQueueInfo =
+    booking && (booking.queueType === 'accept' || booking.status === 'pending')
+      ? getQueuePosition(allBookings, booking.id, 'accept')
+      : null;
+
+  const allocateQueueInfo =
+    booking && (booking.queueType === 'allocate' || (booking.status === 'confirmed' && !booking.ambulanceId))
+      ? getQueuePosition(allBookings, booking.id, 'allocate')
+      : null;
+
   const handleMarkReached = async () => {
     if (!booking) return;
     setReaching(true);
     setReachError(null);
     try {
       await markBookingReached(booking.id);
+      processQueue().catch((qErr) => console.warn('[BookingDetails] processQueue warning:', qErr));
     } catch (err) {
       setReachError(err instanceof Error ? err.message : 'Failed to mark as reached.');
     } finally {
@@ -123,6 +134,53 @@ export default function BookingDetailsPage() {
             </div>
             <div className="text-sm text-gray-500">{booking.bookingCode ?? 'No code'}</div>
           </div>
+
+          {/* Queue Status: Waiting in Accept Queue */}
+          {booking.status === 'pending' && (
+            <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 flex items-start gap-3.5 shadow-sm">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-sm">
+                #{acceptQueueInfo?.position || 1}
+              </div>
+              <div>
+                <h4 className="font-bold text-amber-950 text-sm">
+                  Waiting in queue — position {acceptQueueInfo?.position || 1}
+                </h4>
+                <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+                  All ambulances and drivers are currently busy on active trips. Your booking is queued and will be auto-accepted as soon as capacity is freed up.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Queue Status: Waiting in Allocation Queue */}
+          {booking.status === 'confirmed' && !booking.ambulanceId && (
+            <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 flex items-start gap-3.5 shadow-sm">
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-sm">
+                #{allocateQueueInfo?.position || 1}
+              </div>
+              <div>
+                <h4 className="font-bold text-blue-950 text-sm">
+                  Payment done — ambulance will be assigned shortly (position {allocateQueueInfo?.position || 1})
+                </h4>
+                <p className="text-xs text-blue-800 mt-0.5 leading-relaxed">
+                  Payment is confirmed! Our automated dispatch system is assigning the next available ambulance and driver to your booking.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Warning: Unpaid accepted booking with 15-minute expiry rule */}
+          {isAcceptedUnpaid && (
+            <div className="mb-6 p-4 rounded-2xl bg-blue-50/70 border border-blue-200 flex items-start gap-3">
+              <Clock className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-bold text-blue-950 text-xs">Payment Required (15-Minute Reservation)</h4>
+                <p className="text-xs text-blue-700 mt-0.5">
+                  An ambulance slot has been reserved for you. Please pay within 15 minutes to confirm allocation, or the reservation will be released to the next queued patient.
+                </p>
+              </div>
+            </div>
+          )}
 
           {reachError && (
             <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">

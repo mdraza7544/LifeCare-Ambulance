@@ -30,6 +30,7 @@ export interface CheckoutOptions {
   phone: string;
   email: string;
   method?: 'UPI' | 'Card';
+  mode?: PaymentMode;
   onSuccess: (response: RazorpayHandlerResponse, methodUsed?: string) => void | Promise<void>;
   onDismiss: () => void;
   onFailure?: (error: Error) => void;
@@ -52,12 +53,12 @@ export function registerDemoModal(launcher: DemoModalLauncher): () => void {
 }
 
 /**
- * Opens checkout modal based on VITE_PAYMENT_MODE.
- * - In demo mode: opens DemoCheckoutModal without calling Razorpay or Cloud Functions.
- * - In razorpay mode: creates order via Cloud Functions and opens real Razorpay checkout.
+ * Opens checkout modal.
+ * - If options.mode is specified, uses that mode directly ("demo" or "razorpay").
+ * - Otherwise falls back to VITE_PAYMENT_MODE environment variable.
  */
 export async function openCheckout(options: CheckoutOptions): Promise<boolean> {
-  const mode = getPaymentMode();
+  const mode = options.mode || getPaymentMode();
 
   if (mode === 'razorpay') {
     try {

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { LayoutDashboard, Calendar, Ambulance, Users, Hospital, CreditCard, BarChart3, Bell, Settings, LogOut, Menu, Ambulance as Logo, ArrowLeft } from 'lucide-react';
 import { useApp } from '@/lib/context';
 import { useAuth } from '@/lib/auth';
+import { useDispatchWatcher } from '@/lib/dispatchService';
 
 const adminNav = [
   { label: 'Dashboard', path: '/admin', icon: LayoutDashboard },
@@ -17,9 +18,12 @@ const adminNav = [
 ];
 
 export default function AdminLayout({ children, title }: { children: React.ReactNode; title: string }) {
-  const { route, navigate } = useApp();
+  const { route, navigate, unreadCount } = useApp();
   const { user, signOut } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Background dispatch watcher keeps queues moving when admin is active
+  useDispatchWatcher();
 
   const isActive = (path: string) => route === path || (path === '/admin' && route === '/admin');
 
@@ -60,7 +64,18 @@ export default function AdminLayout({ children, title }: { children: React.React
             <h1 className="text-lg font-bold text-gray-900">{title}</h1>
           </div>
           <div className="flex items-center gap-3">
-            <button onClick={() => navigate('/admin/notifications')} className="relative p-2 rounded-lg hover:bg-gray-100"><Bell className="w-5 h-5 text-gray-600" /></button>
+            <button
+              onClick={() => navigate('/admin/notifications')}
+              className="relative p-2 rounded-lg hover:bg-gray-100"
+              aria-label="Admin Notifications"
+            >
+              <Bell className="w-5 h-5 text-gray-600" />
+              {unreadCount > 0 && (
+                <span className="absolute top-1 right-1 min-w-4 h-4 px-1 rounded-full bg-brand-500 text-white text-[10px] font-bold flex items-center justify-center">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm">
                 {user?.user_metadata?.full_name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'A'}

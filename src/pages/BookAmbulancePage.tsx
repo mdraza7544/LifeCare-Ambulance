@@ -18,7 +18,8 @@ import { useAuth } from '@/lib/auth';
 import { PageHeader } from '@/components/UI';
 import { ambulanceTypePricing } from '@/lib/pricing';
 import { generateBookingCode, formatCurrency } from '@/lib/utils';
-import { createBooking } from '@/lib/firestoreService';
+import { createBooking, createNotification } from '@/lib/firestoreService';
+import { processQueue } from '@/lib/dispatchService';
 import { geocodeAddress } from '@/lib/googleMaps';
 import LocationPicker from '@/components/LocationPicker';
 import HospitalMapPicker, { type RouteInfo } from '@/components/HospitalMapPicker';
@@ -151,13 +152,16 @@ export default function BookAmbulancePage() {
           ? new Date().toISOString()
           : new Date(`${form.date}T${form.time}:00+05:30`).toISOString();
       const bookingCode = generateBookingCode();
-      await createBooking({
+      const nowIso = new Date().toISOString();
+      const bookingId = await createBooking({
         userId: user.id,
         pickup: form.pickup,
         destination: form.destination,
         priority: toPriority(form.emergencyLevel),
         status: 'pending',
         paymentStatus: 'pending',
+        queueType: 'accept',
+        queuedAt: nowIso,
         scheduledTime,
         amount: price,
         bookingCode,
@@ -173,6 +177,32 @@ export default function BookAmbulancePage() {
         durationText: routeInfo?.durationText,
         distanceKm: routeInfo?.distanceKm,
       });
+
+      // User notification: Booking received
+      createNotification({
+        id: `${bookingId}_created`,
+        userId: user.id,
+        title: 'Booking received',
+        message: `Your ambulance booking ${bookingCode} has been received and is being processed.`,
+        type: 'booking',
+        bookingId,
+      }).catch((nErr) => console.error('[BookAmbulancePage] User notification error:', nErr));
+
+      // Admin notification: New booking received
+      createNotification({
+        id: `admin_new_booking_${bookingId}`,
+        userId: 'admin',
+        title: 'New booking received',
+        message: `New booking ${bookingCode} for ${form.patientName || 'patient'} (${form.pickup} → ${form.destination}).`,
+        type: 'booking',
+        bookingId,
+      }).catch((nErr) => console.error('[BookAmbulancePage] Admin notification error:', nErr));
+
+      // Trigger queue processing (auto-accepts if free fleet exists, otherwise stays in accept queue)
+      processQueue().catch((pErr) => {
+        console.warn('[BookAmbulancePage] processQueue trigger warning:', pErr);
+      });
+
       setScheduledIso(scheduledTime);
       setCreatedCode(bookingCode);
       setDone(true);

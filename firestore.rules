@@ -63,7 +63,8 @@ service cloud.firestore {
             request.resource.data.status == 'confirmed' ||
             request.resource.data.status == 'paid' ||
             request.resource.data.status == 'rejected' ||
-            request.resource.data.status == 'cancelled'
+            request.resource.data.status == 'cancelled' ||
+            request.resource.data.status == 'expired'
           )
         ) ||
         (
@@ -167,15 +168,15 @@ service cloud.firestore {
     // Notifications
     match /notifications/{id} {
       allow read: if isSignedIn() &&
-        isNotificationOwner(resource);
+        (isNotificationOwner(resource) || (resource.data.userId == 'admin' && isAdmin()) || isAdmin());
 
-      allow create: if isAdmin() ||
-        (isSignedIn() && isNotificationOwner(request.resource));
+      allow create: if isSignedIn() &&
+        (isNotificationOwner(request.resource) || request.resource.data.userId == 'admin' || isAdmin());
 
       allow update: if isAdmin() ||
-        (isSignedIn() && isNotificationOwner(resource));
+        (isSignedIn() && isNotificationOwner(resource) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'updatedAt', 'updated_at']));
 
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     // Emergency contacts
@@ -199,6 +200,12 @@ service cloud.firestore {
         (isPaymentOwner(request.resource) || isAdmin());
 
       allow update, delete: if isAdmin();
+    }
+
+    // Application & Dispatch Settings
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }

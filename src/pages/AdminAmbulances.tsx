@@ -24,6 +24,7 @@ import {
   type Ambulance,
   type AmbulanceStatus,
 } from '@/lib/firestoreService';
+import { processQueue } from '@/lib/dispatchService';
 import { useApp } from '@/lib/context';
 
 type StatusFilter = 'All' | AmbulanceStatus;
@@ -120,6 +121,7 @@ export default function AdminAmbulances() {
         type: form.type,
         status: form.status,
       });
+      processQueue().catch((qErr) => console.warn('[AdminAmbulances] processQueue warning:', qErr));
       setShowAddModal(false);
       setForm(DEFAULT_FORM);
     } catch (err) {
@@ -146,6 +148,7 @@ export default function AdminAmbulances() {
         // If status changed to available, detach booking if desired
         ...(form.status === 'available' ? { currentBookingId: null } : {}),
       });
+      processQueue().catch((qErr) => console.warn('[AdminAmbulances] processQueue warning:', qErr));
       setEditingAmbulance(null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to update ambulance.');

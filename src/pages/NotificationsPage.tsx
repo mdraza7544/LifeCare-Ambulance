@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { Bell, CheckCheck, Ambulance, CreditCard, Info, User, AlertTriangle, Loader2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
+import { useApp } from '@/lib/context';
 import {
   useNotifications,
   updateNotification,
+  markAllNotificationsRead as fsMarkAllNotificationsRead,
   type Notification,
 } from '@/lib/firestoreService';
 import { PageHeader, EmptyState } from '@/components/UI';
@@ -10,7 +13,9 @@ import { formatDateTime } from '@/lib/utils';
 
 export default function NotificationsPage() {
   const { user } = useAuth();
+  const { navigate, markNotificationRead: contextMarkRead, markAllNotificationsRead: contextMarkAllRead } = useApp();
   const { data: notifications, loading, error } = useNotifications(user?.id ?? null);
+  const [markingAll, setMarkingAll] = useState(false);
 
   const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
     booking: Ambulance,
@@ -19,30 +24,56 @@ export default function NotificationsPage() {
     driver: User,
   };
 
-  const handleMarkRead = async (id: string) => {
-    try {
-      await updateNotification(id, { read: true });
-    } catch (err) {
-      console.warn('Failed to mark notification read:', err);
+  const handleItemClick = async (n: Notification) => {
+    if (!n.read) {
+      contextMarkRead(n.id);
+      try {
+        await updateNotification(n.id, { read: true });
+      } catch (err) {
+        console.error('Failed to mark notification read:', err);
+      }
+    }
+    if (n.bookingId) {
+      navigate(`/booking-details?id=${n.bookingId}`);
     }
   };
 
   const handleMarkAllRead = async () => {
+    if (!user) return;
+    setMarkingAll(true);
+    // Optimistic context update
+    contextMarkAllRead();
     try {
-      const unreadList = (notifications ?? []).filter((n) => !n.read);
-      await Promise.all(unreadList.map((n) => updateNotification(n.id, { read: true })));
+      await fsMarkAllNotificationsRead(user.id);
     } catch (err) {
-      console.warn('Failed to mark all notifications read:', err);
+      console.error('Failed to mark all notifications read:', err);
+    } finally {
+      setMarkingAll(false);
     }
   };
+
+  const hasUnread = (notifications ?? []).some((n) => !n.read);
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 animate-fade-in">
       <div className="flex items-center justify-between mb-6">
-        <PageHeader title="Notifications" subtitle="Stay updated on your bookings and account" icon={<Bell className="w-5 h-5" />} />
-        {!loading && !error && (notifications ?? []).some((n) => !n.read) && (
-          <button onClick={handleMarkAllRead} className="btn-ghost text-sm">
-            <CheckCheck className="w-4 h-4" /> Mark all read
+        <PageHeader
+          title="Notifications"
+          subtitle="Stay updated on your ambulance bookings and account"
+          icon={<Bell className="w-5 h-5" />}
+        />
+        {!loading && !error && hasUnread && (
+          <button
+            onClick={handleMarkAllRead}
+            disabled={markingAll}
+            className="btn-ghost text-xs px-3 py-1.5 flex items-center gap-1.5 border border-gray-200 rounded-xl hover:bg-gray-100"
+          >
+            {markingAll ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <CheckCheck className="w-3.5 h-3.5 text-brand-600" />
+            )}
+            Mark all as read
           </button>
         )}
       </div>
@@ -61,12 +92,18 @@ export default function NotificationsPage() {
           </div>
           <p className="text-red-600 font-semibold mb-1">Failed to load notifications</p>
           <p className="text-gray-500 text-sm mb-4">{error.message}</p>
-          <button onClick={() => window.location.reload()} className="btn-primary text-sm">Retry</button>
+          <button onClick={() => window.location.reload()} className="btn-primary text-sm">
+            Retry
+          </button>
         </div>
       )}
 
       {!loading && !error && (notifications ?? []).length === 0 && (
-        <EmptyState icon={<Bell className="w-8 h-8" />} title="No notifications" message="You're all caught up. New notifications will appear here." />
+        <EmptyState
+          icon={<Bell className="w-8 h-8" />}
+          title="No notifications yet"
+          message="You're all caught up. New booking updates and announcements will appear here."
+        />
       )}
 
       {!loading && !error && (notifications ?? []).length > 0 && (
@@ -76,20 +113,49 @@ export default function NotificationsPage() {
             return (
               <div
                 key={n.id}
-                className={`card p-4 cursor-pointer transition-all ${n.read ? 'opacity-70' : 'border-l-4 border-l-brand-500'}`}
-                onClick={() => !n.read && handleMarkRead(n.id)}
+                className={`card p-4 cursor-pointer transition-all ${
+                  n.read
+                    ? 'bg-gray-50/70 border-l-4 border-l-gray-300 opacity-80 hover:opacity-100'
+                    : 'bg-white border-l-4 border-l-brand-600 shadow-sm hover:shadow-md'
+                }`}
+                onClick={() => handleItemClick(n)}
               >
-                <div className="flex items-start gap-3">
-                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${n.read ? 'bg-gray-100 text-gray-400' : 'bg-brand-50 text-brand-600'}`}>
+                <div className="flex items-start gap-3.5">
+                  <div
+                    className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                      n.read
+                        ? 'bg-gray-100 text-gray-400'
+                        : 'bg-brand-50 text-brand-600 shadow-sm'
+                    }`}
+                  >
                     <Icon className="w-5 h-5" />
                   </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <p className="font-bold text-sm text-gray-900">{n.title}</p>
-                      <span className="text-xs text-gray-400">{n.createdAt ? formatDateTime(n.createdAt) : ''}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <p
+                        className={`text-sm ${
+                          n.read ? 'font-medium text-gray-700' : 'font-bold text-gray-900'
+                        }`}
+                      >
+                        {n.title}
+                      </p>
+                      <span className="text-[11px] text-gray-400 shrink-0">
+                        {n.createdAt ? formatDateTime(n.createdAt) : ''}
+                      </span>
                     </div>
-                    <p className="text-sm text-gray-600 mt-1">{n.message}</p>
-                    {!n.read && <span className="inline-block mt-1.5 text-xs font-semibold text-brand-600">Click to mark as read</span>}
+                    <p className="text-xs text-gray-600 mt-1 leading-relaxed">{n.message}</p>
+                    <div className="flex items-center justify-between gap-2 mt-2">
+                      {n.bookingId && (
+                        <span className="text-[11px] text-brand-600 font-semibold hover:underline inline-flex items-center gap-1">
+                          View Booking →
+                        </span>
+                      )}
+                      {!n.read && (
+                        <span className="text-[10px] font-semibold text-brand-600 bg-brand-50 px-2 py-0.5 rounded-full border border-brand-200 ml-auto">
+                          New
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

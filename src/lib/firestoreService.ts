@@ -9,6 +9,7 @@ import {
   deleteField,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -17,6 +18,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
   type DocumentData,
   type Query,
   type QueryConstraint,
@@ -38,7 +40,8 @@ export type BookingStatus =
   | 'allocated'
   | 'completed'
   | 'rejected'
-  | 'cancelled';
+  | 'cancelled'
+  | 'expired';
 
 export type BookingPriority = 'low' | 'normal' | 'high' | 'critical';
 
@@ -63,6 +66,10 @@ export interface Booking {
   priority: BookingPriority;
   status: BookingStatus;
   paymentStatus: BookingPaymentStatus;
+  queueType?: 'accept' | 'allocate' | null;
+  queuedAt?: string;
+  allocationMode?: 'auto' | 'manual' | null;
+  expiredAt?: string;
   ambulanceId?: string;
   driverId?: string;
   scheduledTime: string;
@@ -93,6 +100,9 @@ export interface BookingInput {
   priority: BookingPriority;
   status?: BookingStatus;
   paymentStatus?: BookingPaymentStatus;
+  queueType?: 'accept' | 'allocate' | null;
+  queuedAt?: string;
+  allocationMode?: 'auto' | 'manual' | null;
   ambulanceId?: string;
   driverId?: string;
   scheduledTime: string;
@@ -121,6 +131,10 @@ export interface BookingPatch {
   priority?: BookingPriority;
   status?: BookingStatus;
   paymentStatus?: BookingPaymentStatus;
+  queueType?: 'accept' | 'allocate' | null;
+  queuedAt?: string;
+  allocationMode?: 'auto' | 'manual' | null;
+  expiredAt?: string;
   ambulanceId?: string;
   driverId?: string;
   scheduledTime?: string;
@@ -248,16 +262,17 @@ export interface PaymentPatch {
 
 /* Booking status flow documentation.
    pending -> accepted -> paid/confirmed -> allocated -> completed
-   Terminal side-exits: rejected / cancelled (from pending or accepted). */
+   Terminal side-exits: rejected / cancelled / expired. */
 export const BOOKING_FLOW: Record<BookingStatus, BookingStatus[]> = {
   pending: ['accepted', 'rejected', 'cancelled'],
-  accepted: ['paid', 'confirmed', 'rejected', 'cancelled'],
+  accepted: ['paid', 'confirmed', 'rejected', 'cancelled', 'expired'],
   paid: ['confirmed'],
-  confirmed: ['allocated'],
+  confirmed: ['allocated', 'cancelled'],
   allocated: ['completed', 'cancelled'],
   completed: [],
   rejected: [],
   cancelled: [],
+  expired: [],
 };
 
 /** Returns true if `from -> to` is a permitted booking status transition. */
@@ -273,13 +288,14 @@ export function isValidBookingTransition(
    Collection references
    ============================================================================ */
 
-const COLLECTIONS = {
+export const COLLECTIONS = {
   bookings: 'bookings',
   ambulances: 'ambulances',
   drivers: 'drivers',
   users: 'users',
   payments: 'payments',
   notifications: 'notifications',
+  settings: 'settings',
 } as const;
 
 const isoNow = () => new Date().toISOString();
@@ -299,7 +315,7 @@ function toISO(v: Timestamp | string | null | undefined): string {
    Document mapping
    ============================================================================ */
 
-function mapBooking(id: string, r: DocumentData): Booking {
+export function mapBooking(id: string, r: DocumentData): Booking {
   return {
     id,
     bookingCode: r.bookingCode ? String(r.bookingCode) : (r.booking_code ? String(r.booking_code) : undefined),
@@ -309,6 +325,10 @@ function mapBooking(id: string, r: DocumentData): Booking {
     priority: (r.priority ?? 'normal') as BookingPriority,
     status: (r.status ?? 'pending') as BookingStatus,
     paymentStatus: (r.paymentStatus ?? r.payment_status ?? 'pending') as BookingPaymentStatus,
+    queueType: (r.queueType ?? r.queue_type ?? null) as 'accept' | 'allocate' | null,
+    queuedAt: r.queuedAt ? toISO(r.queuedAt) : (r.queued_at ? toISO(r.queued_at) : undefined),
+    allocationMode: (r.allocationMode ?? r.allocation_mode ?? null) as 'auto' | 'manual' | null,
+    expiredAt: r.expiredAt ? toISO(r.expiredAt) : (r.expired_at ? toISO(r.expired_at) : undefined),
     ambulanceId: r.ambulanceId ? String(r.ambulanceId) : undefined,
     driverId: r.driverId ? String(r.driverId) : String(r.assigned_driver_uid || r.assignedDriverUid || ''),
     scheduledTime: String(r.scheduledTime ?? r.scheduled_for ?? ''),
@@ -551,10 +571,15 @@ export async function allocateAmbulanceToBooking(
   bookingId: string,
   ambulanceId: string,
   driverId?: string,
+  allocationMode: 'auto' | 'manual' = 'manual',
 ): Promise<void> {
   const ambRef = doc(db, COLLECTIONS.ambulances, ambulanceId);
   const bookingRef = doc(db, COLLECTIONS.bookings, bookingId);
   const driverRef = driverId ? doc(db, COLLECTIONS.drivers, driverId) : null;
+
+  let assignedAmbNumber: string | undefined;
+  let assignedDriverName: string | undefined;
+  let assignedDriverPhone: string | undefined;
 
   await runTransaction(db, async (transaction) => {
     // 1. All transaction reads must precede any writes
@@ -577,6 +602,7 @@ export async function allocateAmbulanceToBooking(
     }
 
     const ambData = ambSnap.data();
+    assignedAmbNumber = ambData.number ? String(ambData.number) : ambulanceId;
     const ambStatus = String(ambData.status ?? 'available').toLowerCase();
     if (ambStatus !== 'available') {
       throw new Error(
@@ -594,6 +620,8 @@ export async function allocateAmbulanceToBooking(
 
     if (driverSnap) {
       const driverData = driverSnap.data();
+      assignedDriverName = driverData.name ? String(driverData.name) : undefined;
+      assignedDriverPhone = driverData.phone ? String(driverData.phone) : undefined;
       const rawDriverStatus = String(driverData.status ?? 'available').toLowerCase();
       const driverStatus =
         rawDriverStatus === 'allocated' || rawDriverStatus === 'on duty' || rawDriverStatus === 'booked'
@@ -614,6 +642,8 @@ export async function allocateAmbulanceToBooking(
       ambulanceId: ambulanceId,
       ...(driverId ? { driverId: driverId } : {}),
       status: 'allocated',
+      queueType: deleteField(),
+      allocationMode: allocationMode,
       allocatedAt: now,
       updatedAt: now,
     });
@@ -633,20 +663,21 @@ export async function allocateAmbulanceToBooking(
     }
   });
 
-  // Non-blocking notification to the user
+  // Non-blocking deterministic notification to the user
   try {
     const booking = await getBooking(bookingId);
     if (booking?.userId) {
       await createNotification({
+        id: `${bookingId}_allocated`,
         userId: booking.userId,
         title: 'Ambulance & Driver Allocated',
-        message: `Ambulance and driver have been allocated for your booking ${booking.bookingCode || bookingId}. They are on their way.`,
-        type: 'booking',
+        message: `Ambulance ${assignedAmbNumber || ambulanceId} and driver ${assignedDriverName || 'Assigned Driver'}${assignedDriverPhone ? ` (${assignedDriverPhone})` : ''} are on their way.`,
+        type: 'driver',
         bookingId: bookingId,
       });
     }
   } catch (err) {
-    console.warn('[allocation] User notification error:', err);
+    console.error('[allocation] User notification error:', err);
   }
 }
 
@@ -697,6 +728,7 @@ export async function markBookingReached(bookingId: string): Promise<void> {
     const now = isoNow();
     transaction.update(bookingRef, {
       status: 'completed',
+      queueType: deleteField(),
       reachedAt: now,
       updatedAt: now,
     });
@@ -718,20 +750,21 @@ export async function markBookingReached(bookingId: string): Promise<void> {
     }
   });
 
-  // Non-blocking notification to user
+  // Non-blocking deterministic notification to user
   try {
     const booking = await getBooking(bookingId);
     if (booking?.userId) {
       await createNotification({
+        id: `${bookingId}_completed`,
         userId: booking.userId,
-        title: 'Ambulance Reached',
+        title: 'Trip completed',
         message: `Your ambulance for booking ${booking.bookingCode || bookingId} has reached the destination. Trip completed.`,
         type: 'booking',
         bookingId: bookingId,
       });
     }
   } catch (err) {
-    console.warn('[markBookingReached] Notification error:', err);
+    console.error('[markBookingReached] Notification error:', err);
   }
 }
 
@@ -894,6 +927,8 @@ export async function recordConfirmedPayment(input: {
       payment_status: 'paid',
       paymentMethod: input.method || 'Razorpay',
       payment_method: input.method || 'Razorpay',
+      queueType: 'allocate',
+      queuedAt: now,
       paymentUpdatedAt: now,
       updatedAt: now,
     },
@@ -952,15 +987,32 @@ function useCollection<T>(
   return { data, loading, error };
 }
 
-/** All bookings, or only those belonging to `userId` when provided. Ordered by createdAt desc. */
+/** All bookings, or only those belonging to `userId` when provided. Subscribes via onSnapshot. */
 export function useBookings(userId?: string | null): UseCollectionResult<Booking> {
   const q = useMemo(() => {
     const ref = collection(db, COLLECTIONS.bookings);
-    const constraints: QueryConstraint[] = [orderBy('createdAt', 'desc')];
-    if (userId) constraints.unshift(where('userId', '==', userId));
-    return query(ref, ...constraints);
+    if (userId) {
+      return query(ref, where('userId', '==', userId));
+    }
+    return query(ref, orderBy('createdAt', 'desc'));
   }, [userId]);
-  return useCollection(q, mapBooking);
+
+  const result = useCollection(q, mapBooking);
+
+  const sortedData = useMemo(() => {
+    return [...result.data].sort((a, b) => {
+      const ta = new Date(a.createdAt || 0).getTime();
+      const tb = new Date(b.createdAt || 0).getTime();
+      return tb - ta;
+    });
+  }, [result.data]);
+
+  return { data: sortedData, loading: result.loading, error: result.error };
+}
+
+/** Real-time hook for the signed-in user's bookings with single onSnapshot listener and error handling. */
+export function useMyBookings(userId?: string | null): UseCollectionResult<Booking> {
+  return useBookings(userId);
 }
 
 /** All ambulances, updated in real time via onSnapshot. */
@@ -1059,6 +1111,7 @@ export interface Notification {
 }
 
 export interface NotificationInput {
+  id?: string;
   userId: string;
   title: string;
   message: string;
@@ -1071,27 +1124,73 @@ export interface NotificationPatch {
 }
 
 export async function createNotification(input: NotificationInput): Promise<string> {
+  const docId = input.id || (input.bookingId ? `${input.bookingId}_${input.type ?? 'system'}` : `notif_${Date.now()}`);
   const now = isoNow();
-  const docRef = await addDoc(collection(db, COLLECTIONS.notifications), {
-    userId: input.userId,
-    user_id: input.userId,
-    title: input.title,
-    message: input.message,
-    read: false,
-    type: input.type ?? 'system',
-    ...(input.bookingId !== undefined ? { bookingId: input.bookingId } : {}),
-    createdAt: now,
-    created_at: now,
-    updatedAt: now,
-  });
-  return docRef.id;
+  const docRef = doc(db, COLLECTIONS.notifications, docId);
+
+  try {
+    await setDoc(
+      docRef,
+      {
+        id: docId,
+        userId: input.userId,
+        user_id: input.userId,
+        title: input.title,
+        message: input.message,
+        read: false,
+        type: input.type ?? 'system',
+        ...(input.bookingId !== undefined ? { bookingId: input.bookingId, booking_id: input.bookingId } : {}),
+        createdAt: serverTimestamp(),
+        created_at: now,
+        updatedAt: serverTimestamp(),
+        updated_at: now,
+      },
+      { merge: true },
+    );
+    return docId;
+  } catch (err) {
+    console.error('[firestoreService] createNotification failed:', err);
+    throw err;
+  }
 }
 
 export async function updateNotification(id: string, patch: NotificationPatch): Promise<void> {
-  await updateDoc(doc(db, COLLECTIONS.notifications, id), {
-    ...patch,
-    updatedAt: isoNow(),
-  });
+  try {
+    await updateDoc(doc(db, COLLECTIONS.notifications, id), {
+      ...patch,
+      updatedAt: serverTimestamp(),
+      updated_at: isoNow(),
+    });
+  } catch (err) {
+    console.error(`[firestoreService] updateNotification failed for ${id}:`, err);
+    throw err;
+  }
+}
+
+export async function markAllNotificationsRead(userId: string): Promise<number> {
+  try {
+    const ref = collection(db, COLLECTIONS.notifications);
+    const snap = await getDocs(query(ref, where('userId', '==', userId)));
+    const unreadDocs = snap.docs.filter((d) => d.data().read === false);
+
+    // WriteBatch in chunks of 400
+    for (let i = 0; i < unreadDocs.length; i += 400) {
+      const chunk = unreadDocs.slice(i, i + 400);
+      const batch = writeBatch(db);
+      chunk.forEach((d) => {
+        batch.update(d.ref, {
+          read: true,
+          updatedAt: serverTimestamp(),
+          updated_at: isoNow(),
+        });
+      });
+      await batch.commit();
+    }
+    return unreadDocs.length;
+  } catch (err) {
+    console.error(`[firestoreService] markAllNotificationsRead failed for ${userId}:`, err);
+    throw err;
+  }
 }
 
 /** Single booking real-time subscription. */
@@ -1137,16 +1236,28 @@ interface UseBookingResult {
   error: Error | null;
 }
 
-/** All notifications for a user (or all if userId not provided), ordered by createdAt desc. */
+/** All notifications for a user (or all if userId not provided), updated in real time via onSnapshot. */
 export function useNotifications(userId?: string | null): UseCollectionResult<Notification> {
   const q = useMemo(() => {
     if (userId === null || userId === '') return null;
     const ref = collection(db, COLLECTIONS.notifications);
-    const constraints: QueryConstraint[] = [orderBy('createdAt', 'desc')];
-    if (userId) constraints.unshift(where('userId', '==', userId));
-    return query(ref, ...constraints);
+    if (userId) {
+      return query(ref, where('userId', '==', userId));
+    }
+    return query(ref);
   }, [userId]);
-  return useCollection(q, mapNotification);
+
+  const result = useCollection(q, mapNotification);
+
+  const sortedData = useMemo(() => {
+    return [...result.data].sort((a, b) => {
+      const ta = new Date(a.createdAt || 0).getTime();
+      const tb = new Date(b.createdAt || 0).getTime();
+      return tb - ta;
+    });
+  }, [result.data]);
+
+  return { data: sortedData, loading: result.loading, error: result.error };
 }
 
 function mapNotification(id: string, r: DocumentData): Notification {

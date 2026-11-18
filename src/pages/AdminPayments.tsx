@@ -17,6 +17,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { usePayments, useBookings, useUsers, type PaymentStatus } from '@/lib/firestoreService';
+import { getKolkataDateString, getKolkataMonthString, toJsDate } from '@/lib/dashboardStats';
 import AdminLayout from '@/components/AdminLayout';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { EmptyState } from '@/components/UI';
@@ -60,41 +61,25 @@ export default function AdminPayments() {
     return map;
   }, [bookings]);
 
-  // Date comparison helpers
+  // Date comparison helpers using consistent Asia/Kolkata boundaries
   const isToday = (isoDate: string): boolean => {
-    if (!isoDate) return false;
-    const d = new Date(isoDate);
-    if (isNaN(d.getTime())) return false;
-    const today = new Date();
-    return (
-      d.getDate() === today.getDate() &&
-      d.getMonth() === today.getMonth() &&
-      d.getFullYear() === today.getFullYear()
-    );
+    const d = toJsDate(isoDate);
+    if (!d) return false;
+    return getKolkataDateString(d) === getKolkataDateString();
   };
 
   const isYesterday = (isoDate: string): boolean => {
-    if (!isoDate) return false;
-    const d = new Date(isoDate);
-    if (isNaN(d.getTime())) return false;
+    const d = toJsDate(isoDate);
+    if (!d) return false;
     const y = new Date();
     y.setDate(y.getDate() - 1);
-    return (
-      d.getDate() === y.getDate() &&
-      d.getMonth() === y.getMonth() &&
-      d.getFullYear() === y.getFullYear()
-    );
+    return getKolkataDateString(d) === getKolkataDateString(y);
   };
 
   const isThisMonth = (isoDate: string): boolean => {
-    if (!isoDate) return false;
-    const d = new Date(isoDate);
-    if (isNaN(d.getTime())) return false;
-    const today = new Date();
-    return (
-      d.getMonth() === today.getMonth() &&
-      d.getFullYear() === today.getFullYear()
-    );
+    const d = toJsDate(isoDate);
+    if (!d) return false;
+    return getKolkataMonthString(d) === getKolkataMonthString();
   };
 
   // 1. Summary Cards (Calculated directly from real Firestore data)

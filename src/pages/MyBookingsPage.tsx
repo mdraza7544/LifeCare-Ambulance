@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Calendar, Search, Ambulance, Filter, AlertTriangle, CheckCircle2, CreditCard } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
-import { useBookings, type Booking, type BookingStatus } from '@/lib/firestoreService';
+import { useBookings, type BookingStatus } from '@/lib/firestoreService';
 import { PageHeader, EmptyState } from '@/components/UI';
 import StatusBadge from '@/components/StatusBadge';
 import { formatDateTime } from '@/lib/utils';
@@ -90,6 +90,16 @@ export default function MyBookingsPage() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-bold text-gray-900 truncate">{b.bookingCode ?? 'No code'}</p>
                   <StatusBadge status={b.status} />
+                  {b.queueType === 'accept' && b.status === 'pending' && (
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                      In Queue (Waiting for Ambulance)
+                    </span>
+                  )}
+                  {b.queueType === 'allocate' && b.status === 'confirmed' && (
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-100 text-blue-800 border border-blue-200">
+                      In Queue (Assigning Driver)
+                    </span>
+                  )}
                 </div>
                 <p className="text-sm text-gray-500 mt-1">User {b.userId ?? '—'}</p>
                 <p className="text-xs text-gray-500 mt-0.5">{b.pickup} → {b.destination}</p>

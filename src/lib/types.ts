@@ -111,6 +111,7 @@ export interface NotificationItem {
   time: string;
   read: boolean;
   type: 'booking' | 'payment' | 'system' | 'driver';
+  bookingId?: string;
 }
 
 export interface Address {

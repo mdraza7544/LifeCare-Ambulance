@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "seed:fleet": "node scripts/seedFleet.mjs",
+    "seed:fleet:clean": "node scripts/seedFleet.mjs --clean",
     "build:functions": "cd functions && npm run build",
     "start:functions": "cd functions && firebase emulators:start --only functions",
     "dev:all": "concurrently \"npm run dev\" \"npm run start:functions\""

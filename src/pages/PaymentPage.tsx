@@ -3,13 +3,14 @@ import { useAuth } from '@/lib/auth';
 import { useBooking, recordConfirmedPayment, createNotification, type Booking } from '@/lib/firestoreService';
 import { useApp } from '@/lib/context';
 import { verifyRazorpayPayment, type RazorpayHandlerResponse } from '@/lib/razorpay';
-import { openCheckout, getPaymentMode } from '@/lib/payment';
+import { openCheckout, type PaymentMode } from '@/lib/payment';
+import { processQueue } from '@/lib/dispatchService';
 import { sendSafetyEmail } from '@/lib/email';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { PageHeader } from '@/components/UI';
 import StatusBadge from '@/components/StatusBadge';
 import DemoCheckoutModal from '@/components/DemoCheckoutModal';
-import { CreditCard, Calendar, Ambulance, Loader2, XCircle, CheckCircle2, Sparkles } from 'lucide-react';
+import { CreditCard, Calendar, Ambulance, Loader2, XCircle, CheckCircle2, Sparkles, ShieldCheck } from 'lucide-react';
 
 function getBookingId(): string | null {
   const hash = window.location.hash || '';
@@ -25,7 +26,7 @@ export default function PaymentPage() {
 
   const [payError, setPayError] = useState<string | null>(null);
   const [payPending, setPayPending] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [submittingMode, setSubmittingMode] = useState<PaymentMode | null>(null);
 
   useEffect(() => {
     if (payError || payPending) {
@@ -45,8 +46,9 @@ export default function PaymentPage() {
     // 1. In-app notification
     try {
       await createNotification({
+        id: `${targetBooking.id}_payment`,
         userId: targetBooking.userId,
-        title: 'Payment Confirmed',
+        title: 'Payment successful - booking confirmed',
         message: `Payment of ${formatCurrency(targetBooking.amount ?? 0)} received for booking ${targetBooking.bookingCode || targetBooking.id}. Your ambulance booking is confirmed.`,
         type: 'payment',
         bookingId: targetBooking.id,
@@ -74,9 +76,9 @@ export default function PaymentPage() {
   const handlePaymentSuccess = async (
     response: RazorpayHandlerResponse,
     methodUsed: string = 'Demo Online Payment',
+    mode: PaymentMode = 'demo',
   ) => {
     if (!booking) return;
-    const mode = getPaymentMode();
 
     if (mode === 'razorpay') {
       try {
@@ -91,19 +93,21 @@ export default function PaymentPage() {
             status: 'paid',
             mode: 'razorpay',
           });
+          // Process queue to auto-allocate ambulance and driver
+          processQueue().catch((qErr) => console.warn('[PaymentPage] processQueue warning:', qErr));
           await dispatchConfirmationAlerts(booking);
-          setSubmitting(false);
+          setSubmittingMode(null);
           navigate(`/payment-confirmation?id=${booking.id}`);
         } else if (result.status === 'pending') {
           setPayPending('Payment authorized — awaiting confirmation. Your booking will update shortly.');
-          setSubmitting(false);
+          setSubmittingMode(null);
         } else {
           setPayError('Payment verification failed. Please contact support.');
-          setSubmitting(false);
+          setSubmittingMode(null);
         }
       } catch (err) {
         setPayError(err instanceof Error ? err.message : 'Payment verification failed.');
-        setSubmitting(false);
+        setSubmittingMode(null);
       }
     } else {
       // Demo mode: skip server-side signature verification (Cloud Function)
@@ -117,22 +121,24 @@ export default function PaymentPage() {
           status: 'paid',
           mode: 'demo',
         });
+        // Process queue to auto-allocate ambulance and driver
+        processQueue().catch((qErr) => console.warn('[PaymentPage] processQueue warning:', qErr));
         await dispatchConfirmationAlerts(booking);
-        setSubmitting(false);
+        setSubmittingMode(null);
         navigate(`/payment-confirmation?id=${booking.id}`);
       } catch (err) {
         setPayError(err instanceof Error ? err.message : 'Payment recording failed.');
-        setSubmitting(false);
+        setSubmittingMode(null);
       }
     }
   };
 
   const handleDismiss = () => {
-    setPayError('Payment cancelled. Your booking is saved but not confirmed — tap Pay Now to try again.');
-    setSubmitting(false);
+    setPayError('Payment cancelled. Your booking is saved but not confirmed — choose a payment option to try again.');
+    setSubmittingMode(null);
   };
 
-  const handlePay = async () => {
+  const handlePay = async (targetMode: PaymentMode) => {
     if (!booking || !isPayable) {
       setPayError('This booking is not ready for payment. Please check your booking status.');
       return;
@@ -141,7 +147,7 @@ export default function PaymentPage() {
       setPayError('You must be signed in to pay. Please sign in and try again.');
       return;
     }
-    setSubmitting(true);
+    setSubmittingMode(targetMode);
     setPayError(null);
     setPayPending(null);
 
@@ -154,21 +160,22 @@ export default function PaymentPage() {
         phone: booking.phone ?? '',
         email: user.email || '',
         method: 'Card',
-        onSuccess: (resp, methodUsed) => handlePaymentSuccess(resp, methodUsed),
+        mode: targetMode,
+        onSuccess: (resp, methodUsed) => handlePaymentSuccess(resp, methodUsed, targetMode),
         onDismiss: handleDismiss,
         onFailure: (err) => {
           setPayError(err.message || 'Payment failed. Please try again.');
-          setSubmitting(false);
+          setSubmittingMode(null);
         },
       });
 
       if (!opened) {
         setPayError('Could not open the payment window. Please try again.');
-        setSubmitting(false);
+        setSubmittingMode(null);
       }
     } catch (err) {
       setPayError(err instanceof Error ? err.message : 'Payment failed. Please try again.');
-      setSubmitting(false);
+      setSubmittingMode(null);
     }
   };
 
@@ -304,28 +311,91 @@ export default function PaymentPage() {
             </p>
           )}
 
-          <div className="mt-8 flex flex-col items-center gap-4">
-            <button onClick={handlePay} disabled={submitting} className="btn-primary inline-flex items-center gap-2">
-              {submitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> Processing…
-                </>
-              ) : (
-                <>
-                  <CreditCard className="w-4 h-4" /> Pay Now
-                </>
-              )}
-            </button>
-            <p className="text-xs text-gray-400 text-center">
-              Secured by Razorpay · Your payment is encrypted and safe.
-            </p>
+          <div className="mt-8 border-t border-gray-100 pt-6">
+            <h3 className="text-sm font-semibold text-gray-800 text-center mb-4">
+              Choose Payment Option
+            </h3>
 
-            {getPaymentMode() === 'demo' && (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                Demo Payment Mode Active (No real charges)
-              </span>
-            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Demo Mode Card */}
+              <div className="border-2 border-amber-300/80 bg-gradient-to-b from-amber-50/60 to-white rounded-2xl p-5 flex flex-col justify-between hover:border-amber-400 transition-all shadow-sm">
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                      Demo / Presentation
+                    </span>
+                    <span className="text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded">
+                      Zero Charge
+                    </span>
+                  </div>
+                  <h4 className="font-semibold text-gray-900 text-sm mb-1">
+                    Demo Simulated Payment
+                  </h4>
+                  <p className="text-xs text-gray-600 mb-4 leading-relaxed">
+                    Razorpay replica checkout with test cards and UPI. Instant confirmation without real bank deduction — ideal for client presentation.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handlePay('demo')}
+                  disabled={submittingMode !== null}
+                  className="w-full py-2.5 px-4 rounded-xl font-medium text-sm text-amber-950 bg-amber-400 hover:bg-amber-500 active:bg-amber-600 transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {submittingMode === 'demo' ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Processing Demo…
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" /> Pay with Demo ({formatCurrency(booking.amount ?? 0)})
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Real Razorpay Card */}
+              <div className="border border-gray-200 bg-gradient-to-b from-slate-50/60 to-white rounded-2xl p-5 flex flex-col justify-between hover:border-brand-500 transition-all shadow-sm">
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700">
+                      <CreditCard className="w-3.5 h-3.5 text-blue-600" />
+                      Live Gateway
+                    </span>
+                    <span className="text-[11px] font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
+                      Real Payment
+                    </span>
+                  </div>
+                  <h4 className="font-semibold text-gray-900 text-sm mb-1">
+                    Razorpay Official Gateway
+                  </h4>
+                  <p className="text-xs text-gray-600 mb-4 leading-relaxed">
+                    Live payment gateway for real transactions via Debit/Credit Cards, UPI QR, Netbanking, and Wallets.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handlePay('razorpay')}
+                  disabled={submittingMode !== null}
+                  className="w-full btn-primary py-2.5 px-4 rounded-xl font-medium text-sm shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {submittingMode === 'razorpay' ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Processing Razorpay…
+                    </>
+                  ) : (
+                    <>
+                      <CreditCard className="w-4 h-4" /> Pay with Razorpay ({formatCurrency(booking.amount ?? 0)})
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-400 text-center mt-6 flex items-center justify-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-gray-400 shrink-0" />
+              Secured 256-bit encryption · Both payment options automatically update booking status and record payment history.
+            </p>
           </div>
         </div>
       )}
